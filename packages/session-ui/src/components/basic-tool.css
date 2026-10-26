@@ -168,6 +168,27 @@
     align-items: center;
     flex-shrink: 0;
   }
+
+  /* A summary too long for its row fades out at its end instead of cutting off. The scroll timeline is only active
+     while the text overflows, so a summary that fits keeps its last letters. */
+  [data-slot="basic-tool-tool-subtitle"],
+  [data-slot="basic-tool-tool-arg"] {
+    --tool-summary-fade-angle: 90deg;
+    text-overflow: clip;
+    animation: tool-summary-fade linear both;
+    animation-timeline: scroll(self inline);
+
+    &:dir(rtl) {
+      --tool-summary-fade-angle: 270deg;
+    }
+  }
+}
+
+@keyframes tool-summary-fade {
+  from,
+  to {
+    mask-image: linear-gradient(var(--tool-summary-fade-angle), #000 calc(100% - 24px), transparent);
+  }
 }
 
 /* The action sits on the trigger's line as a sibling, since buttons cannot nest inside the trigger button. */

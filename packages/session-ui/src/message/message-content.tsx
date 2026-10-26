@@ -1070,9 +1070,27 @@ function QuietCompaction(props: { id: string; created: number; running: boolean;
     if (!props.running && enter() === "grace" && performance.now() - mounted < 400) setEnter("now")
   })
 
+  let root: HTMLDivElement | undefined
+  let header: HTMLDivElement | undefined
+
+  const toggle = () => {
+    // The open header sticks to the top of the timeline, so collapsing from there would leave the viewport far below
+    // the divider. Scroll it back into place first, before the shorter content clamps the scroll position.
+    const stuck = open() && root && header ? header.getBoundingClientRect().top - root.getBoundingClientRect().top : 0
+
+    if (stuck > 0 && root) scrollParent(root)?.scrollBy({ top: -stuck, behavior: "instant" })
+    setOpen((value) => !value)
+  }
+
   return (
-    <div data-component="session-compaction-message" data-quiet="" data-enter={enter()}>
-      <div class="py-2">
+    <div
+      ref={root}
+      data-component="session-compaction-message"
+      data-quiet=""
+      data-enter={enter()}
+      data-open={expandable() && open() ? "" : undefined}
+    >
+      <div ref={header} data-slot="session-compaction-header" class="py-2">
         <button
           type="button"
           data-slot="session-compaction-divider"
@@ -1083,7 +1101,7 @@ function QuietCompaction(props: { id: string; created: number; running: boolean;
           aria-expanded={expandable() ? open() : undefined}
           aria-controls={expandable() && open() ? `${props.id}-summary` : undefined}
           aria-label={props.running ? label().running : label().done}
-          onClick={() => setOpen((value) => !value)}
+          onClick={toggle}
         >
           <span data-slot="session-compaction-line" data-side="start" class="h-px min-w-0 flex-1">
             <span data-slot="session-compaction-light" />
