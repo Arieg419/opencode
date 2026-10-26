@@ -421,10 +421,8 @@ class PulseState {
 }
 
 // Not live: a live node holds the renderer at its full frame rate. The pulse ticks at PULSE_FPS on the renderer's shared
-// animation clock while it animates, on frames it shares with the other animations. As with the spinner, a tick after a
-// frame that skipped onUpdate (a hidden ancestor) stops the clock until the pulse draws again.
+// animation clock while it animates and is drawn, on frames it shares with the other animations.
 class TabPulseRenderable extends Renderable {
-  private updatedFrame = -1
   private _enabled: boolean
   private inner: PulseState
   private outer: PulseState
@@ -642,19 +640,8 @@ class TabPulseRenderable extends Renderable {
     this.requestRender()
   }
 
-  protected override onUpdate(): void {
-    const resumed = this.updatedFrame < this._ctx.frameId - 1
-    if (resumed && this.animationFps === undefined && (this.inner.live || this.outer.live))
-      this.animationFps = PULSE_FPS
-    this.updatedFrame = this._ctx.frameId
-  }
-
   // deltaTime is the time since the previous tick, so a tick that runs early or late draws the sweep where it is.
   protected override onAnimationTick(deltaTime: number): void {
-    if (this.updatedFrame < this._ctx.frameId - 1) {
-      this.animationFps = undefined
-      return
-    }
     this.inner.advance(deltaTime)
     this.outer.advance(deltaTime)
     this.changed()

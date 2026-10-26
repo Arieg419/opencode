@@ -29,8 +29,7 @@ type SpinnerOptions = RenderableOptions<SpinnerRenderable> & {
 const graphemes = new Intl.Segmenter(undefined, { granularity: "grapheme" })
 
 // Not live: a live node keeps the renderer running, so renderer.idle(), which mini and the CLI await, never resolves.
-// The renderer's shared animation clock ticks it instead, on frames it shares with other animations. Core skips
-// onUpdate for hidden and culled nodes, so a tick after a frame without onUpdate stops the clock until it draws again.
+// The renderer's shared animation clock ticks it instead, on frames it shares with other animations, while it is drawn.
 export class SpinnerRenderable extends Renderable {
   private frameTexts: string[] = []
   private glyphs: { char: string; width: number }[][] = []
@@ -40,7 +39,6 @@ export class SpinnerRenderable extends Renderable {
   private _color: RGBA | ColorGenerator
   private _backgroundColor: RGBA
   private index = 0
-  private updatedFrame = -1
 
   constructor(ctx: RenderContext, options: SpinnerOptions = {}) {
     super(ctx, options)
@@ -95,18 +93,7 @@ export class SpinnerRenderable extends Renderable {
     this.requestRender()
   }
 
-  protected override onUpdate() {
-    const resumed = this.updatedFrame < this._ctx.frameId - 1
-    if (resumed && this.animationFps === undefined && this._autoplay && this.glyphs.length > 1)
-      this.animationFps = 1000 / this._interval
-    this.updatedFrame = this._ctx.frameId
-  }
-
   protected override onAnimationTick(_deltaTime: number, ticks: number) {
-    if (this.updatedFrame < this._ctx.frameId - 1) {
-      this.animationFps = undefined
-      return
-    }
     this.index = (this.index + ticks) % this.glyphs.length
     this.requestRender()
   }
