@@ -523,10 +523,6 @@
     [data-slot="question-progress-segment"]:hover:not(:disabled) {
       background-color: var(--v2-overlay-simple-overlay-hover);
     }
-
-    [data-slot="question-option"]:hover:not(:disabled) [data-slot="question-option-key"][data-picked="false"] {
-      box-shadow: inset 0 0 0 1px var(--v2-icon-icon-muted);
-    }
   }
 
   /* Without the dock's motion there is no sliding bar, so the current question's dash lights itself. */
