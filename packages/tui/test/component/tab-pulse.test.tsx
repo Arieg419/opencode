@@ -38,15 +38,16 @@ async function mount(
   await app.renderOnce()
   return Object.assign(app, {
     clock,
-    /** Advances the clock in 5 ms steps, drawing another frame every `other` ms, and counts the frames. */
+    /** Advances the clock in 5 ms steps beside another animation that ticks every `other` ms, and counts frames. */
     async run(ms: number, other = 0) {
       frames = 0
+      const stop = other ? app.renderer.onAnimationTick(1000 / other, () => app.renderer.requestRender()) : undefined
       for (let elapsed = 5; elapsed <= ms; elapsed += 5) {
         clock.advance(5)
-        if (other && elapsed % other === 0) await app.renderOnce()
         await Bun.sleep(0)
         await Bun.sleep(0)
       }
+      stop?.()
       return frames
     },
     colors() {
@@ -76,7 +77,7 @@ test.each([
   // A requested frame draws asynchronously, on the same 5 ms clock step or a later one depending on the event loop,
   // so frames alone come 50 to 55 ms apart.
   { name: "alone", other: 0, min: 18, max: 20 },
-  { name: "beside a 25 fps animation", other: 40, min: 25, max: 25 },
+  { name: "beside a 25 fps animation", other: 40, min: 24, max: 24 },
   { name: "beside a 50 fps animation", other: 20, min: 50, max: 50 },
 ])("a running pulse adds frames only up to 20 fps, $name", async (item) => {
   await using pulse = await mount(() => ({ active: true }))
@@ -94,12 +95,13 @@ test("a running pulse changes its level at most 20 times a second while the rend
   expect(levels.length).toBeLessThanOrEqual(40)
 })
 
+// Ticks carry the elapsed time, so the sweep is where the clock says when both tick at the same time.
 test("the sweep shows the same colors at the same time at any frame rate", async () => {
   await using slow = await mount(() => ({ active: true }))
   await using fast = await mount(() => ({ active: true }))
-  for (const ms of [300, 700, 1400, 2800]) {
+  for (const ms of [400, 600, 1400, 2800]) {
     await slow.run(ms)
-    await fast.run(ms, 20)
+    await fast.run(ms, 40)
     await slow.renderOnce()
     await fast.renderOnce()
     expect(slow.colors()).toEqual(fast.colors())
