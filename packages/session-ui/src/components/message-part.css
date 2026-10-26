@@ -1227,6 +1227,26 @@
       height: calc(28px + var(--tool-content-gap));
       padding-bottom: var(--tool-content-gap);
       background-color: var(--v2-background-bg-base);
+      container-type: scroll-state;
+
+      /* Matches the open compaction divider: content passing under the stuck row fades out instead of being cut. */
+      &::after {
+        content: "";
+        position: absolute;
+        inset-inline: 0;
+        top: 100%;
+        height: 16px;
+        background: linear-gradient(var(--v2-background-bg-base), transparent);
+        pointer-events: none;
+        opacity: 0;
+        transition: opacity 150ms ease-out;
+      }
+    }
+
+    @container scroll-state(stuck: top) {
+      > [data-slot="collapsible-trigger"][aria-expanded="true"]::after {
+        opacity: 1;
+      }
     }
 
     /* Nested sticky file headers stop below the open group header. */

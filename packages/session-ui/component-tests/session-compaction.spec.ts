@@ -228,8 +228,15 @@ story("keeps an open summary's divider stuck under the title and collapses it in
       return Math.round(node.getBoundingClientRect().top - scroller.getBoundingClientRect().top)
     })
 
+  const fade = () =>
+    message
+      .locator('[data-slot="session-compaction-header"]')
+      .evaluate((node) => getComputedStyle(node, "::after").opacity)
+
   await divider.click()
   await expect(summary).toContainText("Step 6")
+  // The soft edge below the header shows only once it is stuck, so the summary's first lines stay clear.
+  await expect.poll(fade).toBe("0")
 
   // Deep inside the summary, the divider holds below the 48 px title, 8 px under its header's top padding.
   await scroller.evaluate((node) => {
@@ -237,6 +244,12 @@ story("keeps an open summary's divider stuck under the title and collapses it in
     node.scrollTop += message.getBoundingClientRect().top - node.getBoundingClientRect().top + 600
   })
   await expect.poll(top).toBe(56)
+  await expect.poll(fade).toBe("1")
+  expect(
+    await message
+      .locator('[data-slot="session-compaction-header"]')
+      .evaluate((node) => getComputedStyle(node, "::after").pointerEvents),
+  ).toBe("none")
 
   await divider.click()
   await expect(divider).toHaveAttribute("aria-expanded", "false")
