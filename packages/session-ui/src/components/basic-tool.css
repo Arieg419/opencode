@@ -105,7 +105,6 @@
     flex-shrink: 1;
     min-width: 0;
     overflow: hidden;
-    text-overflow: ellipsis;
     white-space: nowrap;
     font-family: var(--font-family-sans);
     font-variant-numeric: tabular-nums;
@@ -151,7 +150,6 @@
     flex-shrink: 1;
     min-width: 0;
     overflow: hidden;
-    text-overflow: ellipsis;
     white-space: nowrap;
     font-family: var(--font-family-sans);
     font-variant-numeric: tabular-nums;
@@ -174,7 +172,6 @@
   [data-slot="basic-tool-tool-subtitle"],
   [data-slot="basic-tool-tool-arg"] {
     --tool-summary-fade-angle: 90deg;
-    text-overflow: clip;
     animation: tool-summary-fade linear both;
     animation-timeline: scroll(self inline);
 

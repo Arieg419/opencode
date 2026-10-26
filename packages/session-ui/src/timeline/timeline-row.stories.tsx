@@ -557,7 +557,25 @@ const longCompactionDocument = {
       type: "assistant",
       agent: "build",
       model: STORY_MODEL,
-      content: [...shellTools("tool_long_before", 1_000, 8), { type: "text", text: "Now the daemon." }],
+      content: [
+        ...shellTools("tool_long_before", 1_000, 8),
+        { type: "text", text: "Now the daemon." },
+        {
+          type: "tool",
+          id: "tool_long_search",
+          name: "websearch",
+          state: {
+            status: "completed",
+            input: {
+              query:
+                "tokio unix socket daemon graceful shutdown with in-flight requests and launchd keepalive restart semantics on macOS",
+            },
+            content: [{ type: "text", text: "https://docs.rs/tokio/latest/tokio/net/struct.UnixListener.html" }],
+            metadata: {},
+          },
+          time: { created: STORY_TIME + 9_000, ran: STORY_TIME + 9_100, completed: STORY_TIME + 9_800 },
+        },
+      ],
       time: { created: STORY_TIME + 1_000, completed: STORY_TIME + 10_000 },
     },
     {

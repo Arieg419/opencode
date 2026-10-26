@@ -944,7 +944,14 @@ function CompactionDivider(props: { label: string }) {
   )
 }
 
-export function SessionCompactionMessage(props: { message: SessionMessageCompaction; error: string }) {
+export function SessionCompactionMessage(props: {
+  message: SessionMessageCompaction
+  error: string
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
+  /** Called before collapsing from a stuck divider scrolls the timeline, so a timeline following its end stops. */
+  onUnpin?: () => void
+}) {
   const i18n = useI18n()
   const data = useData()
   const summary = () => (props.message.status === "failed" ? "" : props.message.summary)
@@ -1001,6 +1008,9 @@ export function SessionCompactionMessage(props: { message: SessionMessageCompact
           running={props.message.status === "running"}
           summary={summary()}
           usage={usage()}
+          open={props.open}
+          onOpenChange={props.onOpenChange}
+          onUnpin={props.onUnpin}
         />
       }
     >
@@ -1047,9 +1057,19 @@ export function SessionCompactionMessage(props: { message: SessionMessageCompact
  * An automatic compaction, drawn as one divider that reads Compacting, then Compacted. Its height never changes, and
  * clicking it opens the summary.
  */
-function QuietCompaction(props: { id: string; created: number; running: boolean; summary: string; usage: string }) {
+function QuietCompaction(props: {
+  id: string
+  created: number
+  running: boolean
+  summary: string
+  usage: string
+  open?: boolean
+  onOpenChange?: (open: boolean) => void
+  onUnpin?: () => void
+}) {
   const i18n = useI18n()
-  const [open, setOpen] = createSignal(false)
+  const [expanded, setExpanded] = createSignal(false)
+  const open = () => props.open ?? expanded()
   // A new one waits out the grace (400 ms, matched in session-compaction.css) before showing Compacting; one that
   // ends inside it, as a precomputed summary does, only fades in as Compacted. One already running or finished when
   // the history loads shows without an entrance.
@@ -1078,8 +1098,15 @@ function QuietCompaction(props: { id: string; created: number; running: boolean;
     // the divider. Scroll it back into place first, before the shorter content clamps the scroll position.
     const stuck = open() && root && header ? header.getBoundingClientRect().top - root.getBoundingClientRect().top : 0
 
-    if (stuck > 0 && root) scrollParent(root)?.scrollBy({ top: -stuck, behavior: "instant" })
-    setOpen((value) => !value)
+    if (stuck > 0 && root) {
+      props.onUnpin?.()
+      scrollParent(root)?.scrollBy({ top: -stuck, behavior: "instant" })
+    }
+
+    const next = !open()
+
+    if (props.open === undefined) setExpanded(next)
+    props.onOpenChange?.(next)
   }
 
   return (

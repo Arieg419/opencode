@@ -261,3 +261,12 @@ story("fades a tool row summary that overflows its row and leaves one that fits 
   await expect.poll(() => mask("cargo test --lib")).toContain("linear-gradient(90deg")
   await expect.poll(() => mask(/^ls$/)).toBe("none")
 })
+
+story("fades an overflowing web search query without an ellipsis", async ({ mount }) => {
+  const timeline = await mount(`${rows}--compaction-long-summary`)
+  const query = timeline.locator(".exa-tool-query").first()
+
+  await timeline.getByRole("button", { name: /^Used 1 (?!Shell)/ }).click()
+  await expect(query).toHaveCSS("text-overflow", "clip")
+  await expect.poll(() => query.evaluate((node) => getComputedStyle(node).maskImage)).toContain("linear-gradient")
+})
