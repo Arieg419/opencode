@@ -245,6 +245,7 @@ test.describe("location", () => {
       await expect(project).toBeVisible({ visible: state.project })
       await expect(worktreeName).toBeVisible({ visible: state.worktree })
       await expect(header.locator(".session-location-worktree-icon")).toBeVisible()
+      await expect(location.locator('[data-slot="session-title-separator"]')).toHaveCount(0)
       await expect
         .poll(() => header.getByRole("heading").evaluate((element) => element.scrollWidth > element.clientWidth))
         .toBe(state.truncated)
