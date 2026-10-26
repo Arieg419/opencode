@@ -420,7 +420,8 @@ export function createComposerEditor(input: {
       !event.shiftKey &&
       !event.altKey &&
       !event.ctrlKey &&
-      !event.metaKey
+      !event.metaKey &&
+      !event.isComposing
     ) {
       event.preventDefault()
 
