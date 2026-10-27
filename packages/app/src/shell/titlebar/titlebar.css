@@ -53,9 +53,10 @@
 @supports (animation-timeline: --vertical-tabs-scroll) {
   [data-slot="vertical-tabs-sidebar"] [data-slot="vertical-tabs-scroll"] {
     scroll-timeline: --vertical-tabs-scroll y;
-    animation:
-      vertical-tabs-fade-top linear both,
-      vertical-tabs-fade-bottom linear both;
+    /* Longhands, so the minifier doesn't expand a shorthand into a 0s duration, which pins scroll progress to the end. */
+    animation-name: vertical-tabs-fade-top, vertical-tabs-fade-bottom;
+    animation-timing-function: linear;
+    animation-fill-mode: both;
     animation-timeline: --vertical-tabs-scroll;
     animation-range:
       0 16px,
