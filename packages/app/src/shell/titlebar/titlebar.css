@@ -10,72 +10,23 @@
 
 [data-slot="vertical-tabs-sidebar"] [data-slot="vertical-tabs-scroll"] {
   min-height: 0;
-  /* Leave enough space to scroll the final tab clear of the fade above Settings. */
   padding-block-end: 16px;
-  scroll-padding-block-end: 16px;
-  scroll-padding-block-start: 16px;
-  -webkit-mask-image: linear-gradient(to bottom, black calc(100% - 16px), transparent);
-  mask-image: linear-gradient(to bottom, black calc(100% - 16px), transparent);
-}
-
-/* Each edge feathers by as much as there is left to scroll past it, up to 16px, so rows fade under the nav above
-   and Settings below without a hard clip, and a list that fits has no fade. */
-@property --vertical-tabs-fade-top {
-  syntax: "<length>";
-  inherits: false;
-  initial-value: 0px;
-}
-
-@property --vertical-tabs-fade-bottom {
-  syntax: "<length>";
-  inherits: false;
-  initial-value: 0px;
-}
-
-@keyframes vertical-tabs-fade-top {
-  from {
-    --vertical-tabs-fade-top: 0px;
-  }
-  to {
-    --vertical-tabs-fade-top: 16px;
-  }
-}
-
-@keyframes vertical-tabs-fade-bottom {
-  from {
-    --vertical-tabs-fade-bottom: 16px;
-  }
-  to {
-    --vertical-tabs-fade-bottom: 0px;
-  }
-}
-
-@supports (animation-timeline: --vertical-tabs-scroll) {
-  [data-slot="vertical-tabs-sidebar"] [data-slot="vertical-tabs-scroll"] {
-    scroll-timeline: --vertical-tabs-scroll y;
-    /* Longhands, so the minifier doesn't expand a shorthand into a 0s duration, which pins scroll progress to the end. */
-    animation-name: vertical-tabs-fade-top, vertical-tabs-fade-bottom;
-    animation-timing-function: linear;
-    animation-fill-mode: both;
-    animation-timeline: --vertical-tabs-scroll;
-    animation-range:
-      0 16px,
-      calc(100% - 16px) 100%;
-    -webkit-mask-image: linear-gradient(
-      to bottom,
-      transparent,
-      black var(--vertical-tabs-fade-top),
-      black calc(100% - var(--vertical-tabs-fade-bottom)),
-      transparent
-    );
-    mask-image: linear-gradient(
-      to bottom,
-      transparent,
-      black var(--vertical-tabs-fade-top),
-      black calc(100% - var(--vertical-tabs-fade-bottom)),
-      transparent
-    );
-  }
+  /* Keyboard navigation scrolls a tab clear of the feathered edges, which TitlebarTabStrip sizes from the scroll. */
+  scroll-padding-block: 16px;
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    black var(--vertical-tabs-fade-top, 0px),
+    black calc(100% - var(--vertical-tabs-fade-bottom, 0px)),
+    transparent
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    transparent,
+    black var(--vertical-tabs-fade-top, 0px),
+    black calc(100% - var(--vertical-tabs-fade-bottom, 0px)),
+    transparent
+  );
 }
 
 [data-slot="mobile-tabs-trigger"][aria-expanded="true"] {
