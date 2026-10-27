@@ -16,6 +16,7 @@ import { SessionTabAvatarView } from "@/shell/layout/session-tab-avatar"
 import { sessionTabTitle } from "./tab-title"
 import { sessionTitle } from "@/session/title"
 import { createSessionInbox, inboxArchived, inboxBusy, type InboxEntry, type InboxStatus } from "./inbox-model"
+import { arrivalOrder } from "./inbox-order"
 
 // `since` is when the inbox was first used; Recent only lists sessions that finished a run after it.
 const InboxState = Persistence.struct({
@@ -33,8 +34,24 @@ export function SidebarInbox() {
     workingExpanded: true,
   })
 
+  // Working rows keep the order they joined the shelf in. `time.updated` moves with every message of a run, so the
+  // newest-first index order would keep reshuffling them.
+  const workingOrder = createMemo(
+    (previous: string[]) =>
+      arrivalOrder(
+        previous,
+        inbox
+          .entries()
+          .filter((entry) => entry.status === "working")
+          .map((entry) => entry.key),
+      ),
+    [],
+  )
+
   const sections = createMemo(() => {
     const list = inbox.entries()
+    const byKey = inbox.byKey()
+
     // The most recently finished session comes first.
     const finished = list
       .filter((entry) => {
@@ -48,7 +65,11 @@ export function SidebarInbox() {
       needs: list.filter((entry) => entry.status === "approval" || entry.status === "input"),
       inbox: finished.filter((entry) => !inboxArchived(entry)),
       archived: finished.filter(inboxArchived),
-      working: list.filter((entry) => entry.status === "working"),
+      working: workingOrder().flatMap((key) => {
+        const entry = byKey.get(key)
+
+        return entry ? [entry] : []
+      }),
     }
   })
 
