@@ -98,6 +98,7 @@ export function SidebarInbox() {
       await inbox.remove(props.entry)
       dialog.close()
     }
+
     return (
       <Dialog fit>
         <DialogHeader hideClose>
@@ -261,6 +262,10 @@ function InboxRow(props: {
   const status = () => props.entry.status
   const unread = () => status() !== "ready" && status() !== "working"
 
+  // Ready rows show their age instead of a status.
+  const statusLabel = (value: InboxStatus) =>
+    value === "ready" ? undefined : language.t(`sidebar.inbox.status.${value}`)
+
   // Sessions on the current server are not marked.
   const tag = () => servers.tag(props.entry.conn)
 
@@ -325,10 +330,7 @@ function InboxRow(props: {
                   "text-v2-state-fg-success": status() === "done",
                 }}
               >
-                <Show
-                  when={status() === "working"}
-                  fallback={language.t(`sidebar.inbox.status.${status() as Exclude<InboxStatus, "ready">}`)}
-                >
+                <Show when={status() === "working"} fallback={statusLabel(status())}>
                   {/* Announce only the status: the ticking duration would be re-read every second. */}
                   <span class="sr-only">{language.t("sidebar.inbox.status.working")}</span>
                   {/* Keep the status colour under the sweep. */}
