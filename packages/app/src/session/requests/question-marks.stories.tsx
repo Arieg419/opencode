@@ -60,11 +60,13 @@ function QuestionMarksPreview(props: MarksArgs) {
   const [state, setState] = createStore({ revision: 0 })
   // `?scheme=` pins a colour scheme for stills.
   const url = new URLSearchParams(location.search)
+
   const scheme = (): Scheme => {
     const value = url.get("scheme")
 
     return value === "dark" || value === "light" || value === "both" ? value : props.scheme
   }
+
   const schemes = () => (scheme() === "both" ? (["dark", "light"] as const) : [scheme()])
 
   return (
