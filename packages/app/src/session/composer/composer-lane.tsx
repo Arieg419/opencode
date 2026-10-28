@@ -18,7 +18,9 @@ export function useComposerLaneAlignment() {
 }
 
 // The pills float out of flow in a lane the timeline reserves at its tail, so coming and going never resizes the
-// composer region or moves the timeline. Every pill shares the lane's one row.
+// composer region or moves the timeline. Every pill shares the lane's one row. The lane is inset by the timeline's turn
+// padding (`px-4 md:px-6`) less the region's `px-3`, so start and end pills line up with the timeline's text column
+// and user bubbles rather than with the composer's wider edge.
 export function SessionComposerLane(props: ParentProps) {
   const alignment = useComposerLaneAlignment()
 
@@ -26,7 +28,7 @@ export function SessionComposerLane(props: ParentProps) {
     <div
       data-component="session-composer-lane"
       data-alignment={alignment()}
-      class="pointer-events-none absolute inset-x-0 bottom-full flex items-end gap-2 pb-2.5"
+      class="pointer-events-none absolute inset-x-1 bottom-full flex items-end gap-2 pb-2.5 md:inset-x-3"
       classList={{
         "justify-start": alignment() === "start",
         "justify-center": alignment() === "center",
