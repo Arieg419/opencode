@@ -122,6 +122,7 @@ const schema: Omit<DatabaseMigration.Migration, "id"> = {
           \`session_id\` text,
           \`name\` text,
           \`action\` text NOT NULL,
+          \`if\` text,
           \`when\` text NOT NULL,
           \`tz\` text NOT NULL,
           \`status\` text DEFAULT 'active' NOT NULL,

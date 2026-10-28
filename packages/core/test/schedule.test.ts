@@ -797,7 +797,7 @@ describe("Schedule", () => {
     }),
   )
 
-  describe("check", () => {
+  describe("code condition", () => {
     /** Creates a check while the user answers each permission it asks for with `reply`; returns what was asked. */
     const answer = (code: string, allow: ReadonlyArray<string>, reply: Permission.Reply) =>
       Effect.gen(function* () {
@@ -829,7 +829,8 @@ describe("Schedule", () => {
             sessionID,
             name: "thread",
             when: { type: "every", every: "5 minutes" },
-            action: { type: "check", code, allow },
+            if: { type: "code", code, allow },
+            action: { type: "prompt", prompt: "The thread changed." },
           })
           .pipe(Effect.exit)
         yield* Fiber.interrupt(replies)
@@ -888,7 +889,10 @@ describe("Schedule", () => {
         expect(yield* pending).toEqual([messageID(schedule, 2)])
         const { db } = yield* Database.Service
         expect(yield* SessionInbox.find(db, messageID(schedule, 2))).toMatchObject({
-          payload: { text: "2 replies" },
+          payload: {
+            text: "The thread changed.\n\n2 replies",
+            metadata: { schedule: { id: schedule.id, run: 2, check: { message: "2 replies" } } },
+          },
         })
         expect(yield* schedules.get(schedule.id)).toMatchObject({ runCount: 2, lastOutcome: "fired" })
         expect(yield* state(schedule)).toEqual({ replies: 2, runs: 1 })
@@ -999,7 +1003,7 @@ describe("Schedule", () => {
       }),
     )
 
-    it.effect("may declare its own state, and wakes with the default text when its message is empty", () =>
+    it.effect("may declare its own state, and wakes with just the prompt when its message is empty", () =>
       Effect.gen(function* () {
         const schedules = yield* setup()
         const schedule = yield* create(`const state = 7\nreturn { wake: true, state, message: "" }`, [])
@@ -1007,7 +1011,7 @@ describe("Schedule", () => {
         yield* schedules.tick
         const { db } = yield* Database.Service
         expect(yield* SessionInbox.find(db, messageID(schedule, 1))).toMatchObject({
-          payload: { text: "Scheduled check thread woke this session" },
+          payload: { text: "The thread changed." },
         })
         expect(yield* state(schedule)).toBe(7)
       }),

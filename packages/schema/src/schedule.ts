@@ -67,28 +67,34 @@ export const PromptAction = Schema.Struct({ type: Schema.tag("prompt"), prompt: 
   identifier: "Schedule.Action.Prompt",
 })
 
-/**
- * Runs `code` as a Code Mode program on each firing, with no model call. It sees only the tools in `allow` and gets
- * `state` (what the previous run returned, initially null), `now` (epoch ms) and `runs` (completed runs), also bound as
- * `input`. It returns `{ wake, state, message? }`; only `wake: true` prompts the Session, with `message`.
- */
-export const CheckAction = Schema.Struct({
-  type: Schema.tag("check"),
-  code: Schema.String,
-  allow: Schema.Array(Schema.String).annotate({ description: "Code Mode tool paths, e.g. slack.slack_read_thread" }),
-}).annotate({ identifier: "Schedule.Action.Check" })
-export type CheckAction = typeof CheckAction.Type
-
-export const Action = Schema.Union([PromptAction, CheckAction]).pipe(
+export const Action = Schema.Union([PromptAction]).pipe(
   Schema.toTaggedUnion("type"),
   Schema.annotate({ identifier: "Schedule.Action" }),
 )
 export type Action = typeof Action.Type
 
+/**
+ * Runs `code` as a Code Mode program before each firing, with no model call. It sees only the tools in `allow` and gets
+ * `state` (what its previous run returned, initially null), `now` (epoch ms) and `runs` (completed runs), also bound as
+ * `input`, and must return `{ wake, state, message? }`.
+ */
+export const CodeCondition = Schema.Struct({
+  type: Schema.tag("code"),
+  code: Schema.String,
+  allow: Schema.Array(Schema.String).annotate({ description: "Code Mode tool paths, e.g. slack.slack_read_thread" }),
+}).annotate({ identifier: "Schedule.Condition.Code" })
+
+/** Checked before each firing; the schedule prompts only when it wakes. */
+export const Condition = Schema.Union([CodeCondition]).pipe(
+  Schema.toTaggedUnion("type"),
+  Schema.annotate({ identifier: "Schedule.Condition" }),
+)
+export type Condition = typeof Condition.Type
+
 export const Status = Schema.Literals(["active", "paused", "done"]).annotate({ identifier: "Schedule.Status" })
 export type Status = typeof Status.Type
 
-/** `checked`: a check ran and did not wake the Session. */
+/** `checked`: the schedule's condition ran and did not wake the Session. */
 export const Outcome = Schema.Literals(["fired", "late", "checked", "skipped", "disabled", "failed"]).annotate({
   identifier: "Schedule.Outcome",
 })
@@ -100,6 +106,7 @@ export const Info = Schema.Struct({
   name: Schema.String.pipe(optional),
   when: When,
   tz: Schema.String,
+  if: Condition.pipe(optional),
   action: Action,
   status: Status,
   nextDueAt: DateTimeUtcFromMillis.pipe(optional),
@@ -117,6 +124,7 @@ export const CreateInput = Schema.Struct({
   name: Schema.String.pipe(optional),
   when: When,
   ends: Ends.pipe(optional),
+  if: Condition.pipe(optional),
   action: Action,
 }).annotate({ identifier: "Schedule.CreateInput" })
 export type CreateInput = typeof CreateInput.Type

@@ -17,6 +17,7 @@ export const ScheduleTable = sqliteTable(
       .references(() => SessionTable.id, { onDelete: "cascade" }),
     name: text(),
     action: text({ mode: "json" }).$type<Schedule.Action>().notNull(),
+    if: text({ mode: "json" }).$type<Schedule.Condition>(),
     when: text({ mode: "json" }).$type<Schedule.When>().notNull(),
     tz: text().notNull(),
     status: text().$type<Schedule.Status>().notNull().default("active"),
@@ -29,7 +30,7 @@ export const ScheduleTable = sqliteTable(
     last_outcome: text().$type<Schedule.Outcome>(),
     /** The loop leaves a due row alone until then, e.g. while its location has schedules turned off. */
     retry_at: integer(),
-    /** What a check action's last run returned as `state`. */
+    /** What the condition's last run returned as `state`. */
     state: text({ mode: "json" }).$type<Schema.Json>(),
     ...Timestamps,
   },

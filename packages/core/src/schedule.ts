@@ -45,7 +45,7 @@ export class DisabledError extends Schema.TaggedError<DisabledError>()("Schedule
 }
 
 export interface Interface {
-  /** For a check action, first asks the Session's user to approve each allowlisted tool, as a tool call would. */
+  /** With a code condition, first asks the Session's user to approve each allowlisted tool, as a tool call would. */
   readonly create: (
     input: CreateInput,
   ) => Effect.Effect<Info, InvalidError | DisabledError | Session.NotFoundError | Permission.Error>
@@ -145,11 +145,10 @@ const finished = (row: Pick<Row, "ends_at">, next: number | undefined, remaining
 
 const optionalTime = (value: number | null) => (value === null ? undefined : DateTime.makeUnsafe(value))
 
-const promptText = (row: Row, checked: { readonly wake: boolean; readonly message?: string } | undefined) => {
-  if (row.action.type === "prompt") return row.action.prompt
-  if (!checked?.wake) return undefined
-  if (checked.message?.trim()) return checked.message
-  return `Scheduled check ${row.name ?? row.id} woke this session`
+/** The schedule's prompt, followed by the condition's message when it has one. */
+const promptText = (row: Row, message: string | undefined) => {
+  if (!message?.trim()) return row.action.prompt
+  return `${row.action.prompt}\n\n${message}`
 }
 
 const toInfo = (row: Row): Info => ({
@@ -158,6 +157,7 @@ const toInfo = (row: Row): Info => ({
   name: row.name ?? undefined,
   when: row.when,
   tz: row.tz,
+  if: row.if ?? undefined,
   action: row.action,
   status: row.status,
   nextDueAt: optionalTime(row.next_due_at),
@@ -232,7 +232,7 @@ const layer = Layer.effect(
     const approve = Effect.fnUntraced(function* (
       session: SessionSchema.Info,
       name: string | undefined,
-      action: ScheduleSchema.CheckAction,
+      condition: ScheduleSchema.Condition,
     ) {
       const permission = yield* Permission.Service
       const agents = yield* Agent.Service
@@ -240,7 +240,7 @@ const layer = Layer.effect(
       const agent = yield* agents.select(session.agent)
       const registered = yield* tools.list()
       yield* Effect.forEach(
-        action.allow,
+        condition.allow,
         (path) =>
           Effect.gen(function* () {
             const tool = registered.find(
@@ -251,7 +251,7 @@ const layer = Layer.effect(
               action: tool.options?.permission ?? tool.id,
               resources: ["*"],
               save: ["*"],
-              metadata: { schedule: name, code: action.code, allow: action.allow },
+              metadata: { schedule: name, code: condition.code, allow: condition.allow },
               sessionID: session.id,
               agent: agent.id,
             })
@@ -260,11 +260,11 @@ const layer = Layer.effect(
       )
     })
 
-    // A failed, timed out or invalid check fails the firing, which backs off like a failed prompt.
+    // Runs the condition. A failed, timed out or invalid run fails the firing, which backs off like a failed prompt.
     const check = Effect.fnUntraced(
       function* (
         row: Row,
-        action: ScheduleSchema.CheckAction,
+        condition: ScheduleSchema.Condition,
         session: SessionSchema.Info,
         messageID: SessionMessage.ID,
         now: number,
@@ -277,8 +277,8 @@ const layer = Layer.effect(
         const result = yield* tools.check({
           // Bound on the program's first line, so diagnostics keep the author's line numbers. The program runs in a
           // block, so it may declare its own state; it must return its result, as a final expression is not used.
-          code: `const input = ${input}; const { state, now, runs } = input; {${action.code}\n}`,
-          allow: action.allow,
+          code: `const input = ${input}; const { state, now, runs } = input; {${condition.code}\n}`,
+          allow: condition.allow,
           permissions: Permission.merge(agent.info.permissions, session.permissions ?? []),
           limits: CHECK_LIMITS,
           context: {
@@ -297,7 +297,7 @@ const layer = Layer.effect(
           })
         return decoded.success
       },
-      (effect, _row, _action, session) =>
+      (effect, _row, _condition, session) =>
         effect.pipe(
           Effect.timeoutOrElse({
             duration: CHECK_TIMEOUT,
@@ -312,13 +312,13 @@ const layer = Layer.effect(
       // The id is derived from the run, so retrying after a crash reconciles with the earlier admission.
       const id = SessionMessage.ID.make(`msg_${row.id}_${run}`)
       const late = now - due >= LATE_AFTER
-      const checked = row.action.type === "check" ? yield* check(row, row.action, session, id, now) : undefined
-      const text = promptText(row, checked)
-      if (text !== undefined)
+      const checked = row.if === null ? undefined : yield* check(row, row.if, session, id, now)
+      const wake = checked?.wake ?? true
+      if (wake)
         yield* sessions.prompt({
           sessionID: session.id,
           id,
-          text,
+          text: promptText(row, checked?.message),
           delivery: "steer",
           metadata: {
             schedule: {
@@ -327,7 +327,7 @@ const layer = Layer.effect(
               run,
               dueAt: due,
               late,
-              ...(checked ? { check: true } : {}),
+              ...(checked ? { check: checked.message === undefined ? {} : { message: checked.message } } : {}),
             },
           },
         })
@@ -342,8 +342,8 @@ const layer = Layer.effect(
         .set({
           run_count: run,
           last_fired_at: now,
-          last_outcome: text === undefined ? "checked" : late ? "late" : "fired",
-          ...(text === undefined ? {} : { last_message_id: id }),
+          last_outcome: wake ? (late ? "late" : "fired") : "checked",
+          ...(wake ? { last_message_id: id } : {}),
           ...(checked ? { state: checked.state } : {}),
           retry_at: null,
           remaining_runs: remaining,
@@ -513,8 +513,8 @@ const layer = Layer.effect(
         const session = yield* sessions.get(input.sessionID)
         const config = yield* settings(session).pipe(Effect.orDie)
         if (!config.enabled) return yield* new DisabledError()
-        if (input.action.type === "check" && input.action.code.trim() === "")
-          return yield* new InvalidError({ reason: "A check needs code" })
+        if (input.if?.type === "code" && input.if.code.trim() === "")
+          return yield* new InvalidError({ reason: "A code condition needs code" })
         const zone = yield* resolveZone(input.when.tz ?? config.timezone)
         const now = yield* Clock.currentTimeMillis
         const due = yield* firstDue(input.when, zone, now)
@@ -524,8 +524,8 @@ const layer = Layer.effect(
         if (ends !== null && due > ends)
           return yield* new InvalidError({ reason: "The schedule ends before it first fires" })
         // Last, so the user is not asked to approve a schedule that would be rejected anyway.
-        if (input.action.type === "check")
-          yield* approve(session, input.name, input.action).pipe(
+        if (input.if?.type === "code")
+          yield* approve(session, input.name, input.if).pipe(
             instances.provide(session),
             Effect.catchTag("FileSystem.DirectoryNotFoundError", Effect.die),
           )
@@ -535,6 +535,7 @@ const layer = Layer.effect(
             id: ID.create(),
             session_id: session.id,
             name: input.name ?? null,
+            if: input.if ?? null,
             action: input.action,
             when: input.when,
             tz: DateTime.zoneToString(zone),
