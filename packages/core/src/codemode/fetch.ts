@@ -1,4 +1,4 @@
-export * as CodeModeWeb from "./web.js"
+export * as CodeModeFetch from "./fetch.js"
 
 import { Extension } from "@opencode/codemode"
 import { isRecord } from "@opencode/util/record"
@@ -61,7 +61,7 @@ const send = async (input: string | URL, init: Init) => {
   }
 }
 
-export const extension = Extension.make({ name: "web", globals: { fetch: Extension.async(fetch) } })
+export const extension = Extension.make({ name: "fetch", globals: { fetch: Extension.async(fetch) } })
 
 /** What to show for a fetch call: its method and URL. */
 export const display = (args: ReadonlyArray<unknown>) => {

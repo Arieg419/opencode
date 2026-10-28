@@ -15,7 +15,7 @@ import { definition, normalizedName } from "../tool/runtime.js"
 import { Permission } from "../permission.js"
 import { CodeModeCatalog } from "./catalog.js"
 import { CodeModeExecution } from "./execution.js"
-import { CodeModeWeb } from "./web.js"
+import { CodeModeFetch } from "./fetch.js"
 
 const ExecuteFile = Schema.Struct({
   data: Schema.String,
@@ -199,7 +199,7 @@ function progressHooks(record: (update: (items: Array<ExecuteCall>) => Array<Exe
     "extension.before": (call) => {
       switch (call.name) {
         case "fetch":
-          return start(call, { tool: call.name, status: "running", input: CodeModeWeb.display(call.args) })
+          return start(call, { tool: call.name, status: "running", input: CodeModeFetch.display(call.args) })
         default:
           return Effect.void
       }
@@ -259,9 +259,9 @@ function runtime(inventory: Inventory) {
   const cached = runtimes.get(inventory)
   if (cached) return cached
   const tools = inventoryTools(inventory)
-  const created = CodeMode.make<typeof tools, [typeof CodeModeWeb.extension]>({
+  const created = CodeMode.make<typeof tools, [typeof CodeModeFetch.extension]>({
     tools,
-    extensions: [CodeModeWeb.extension],
+    extensions: [CodeModeFetch.extension],
     hooks: runHooks,
   })
   runtimes.set(inventory, created)
