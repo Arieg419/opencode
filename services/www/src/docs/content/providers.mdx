@@ -96,29 +96,6 @@ The `providers` object is keyed by the provider ID used in model references, suc
 | `body` | JSON fields merged into request bodies. |
 | `models` | Models to add or override, keyed by the OpenCode model ID. |
 
-## Canonical provider
-
-Set `canonical` to add a provider that behaves like a built-in one under its own ID, such as a second Anthropic
-endpoint next to the original. It inherits the built-in provider's package and every one of its catalog models. Listed
-`models` override those models, and `disabled` hides one.
-
-```jsonc title="opencode.jsonc"
-{
-  "$schema": "https://opencode.ai/config.json",
-  "providers": {
-    "anthropic-proxy": {
-      "canonical": "anthropic",
-      "settings": {
-        "baseURL": "https://llm-proxy.example.com/anthropic",
-      },
-      "models": {
-        "claude-haiku-4-5": { "disabled": true },
-      },
-    },
-  },
-}
-```
-
 ## Endpoint
 
 Override `settings.baseURL` to send a catalog provider through a proxy or compatible endpoint. Its existing package,
