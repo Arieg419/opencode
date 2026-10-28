@@ -245,6 +245,9 @@ export function getConfig() {
         appId,
         productName: "OpenCode",
         protocols: { name: "OpenCode", schemes: ["opencode"] },
+        // An Icon Composer package compiles to Assets.car, so macOS 26 renders the icon natively instead of
+        // placing the flat ICNS artwork inside a generic squircle (Dock, Finder and system dialogs).
+        mac: { ...base.mac, icon: "resources/icons/icon.icon" },
         publish: {
           provider: "generic",
           url: "https://opencode.ai/update/api/latest/desktop/opencode/",
