@@ -87,7 +87,7 @@ describe("fetch permissions", () => {
     ])
   })
 
-  test("a URL denied for webfetch is never requested", async () => {
+  test("a URL denied for webfetch is never requested and rejects like a failed fetch", async () => {
     hits.length = 0
     const url = `${server.url.origin}/denied`
     const denied = permissionService({
@@ -96,12 +96,12 @@ describe("fetch permissions", () => {
     })
     const result = await Effect.runPromise(
       createCodeMode(new Map(), denied).execute(
-        { code: `try { await fetch("${url}") } catch (e) { return "blocked: " + e.message }` },
+        { code: `const [denied] = await Promise.allSettled([fetch("${url}")]); return denied.status` },
         context,
       ),
     )
 
-    expect(result.output.output).toStartWith("blocked: ")
+    expect(result.output.output).toBe("rejected")
     expect(hits).toEqual([])
   })
 })
