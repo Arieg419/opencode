@@ -7,6 +7,7 @@ import { ConfigWarming } from "@opencode/schema/config/warming"
 import type { Model } from "@opencode/schema/model"
 import { Clock, Duration, Effect, Option, Schema, Scope, Stream } from "effect"
 import { Config } from "../config.js"
+import { resolveModel } from "./optimize.js"
 
 const decodeWarming = Schema.decodeUnknownOption(ConfigWarming.Warming)
 
@@ -21,17 +22,14 @@ export const Plugin = define({
   effect: Effect.fn(function* (ctx) {
     const config = yield* Config.Service
     // A model's or provider's `cache.warming` overrides the top-level `warming`.
-    const loadSettings = Effect.fn("WarmingPlugin.loadSettings")(function* (ref: Model.Ref) {
-      // Warming must never fail the request it hooks, so an unreadable catalog falls back to the top-level setting.
-      const models = yield* ctx.model.list().pipe(
-        Effect.map((response) => response.data),
-        Effect.orElseSucceed(() => []),
-      )
-      const configured = models.find((item) => item.providerID === ref.providerID && item.id === ref.id)?.settings
-        ?.cache?.warming
+    const loadSettings = Effect.fn("WarmingPlugin.loadSettings")(function* (event: SessionHooks["context"]) {
+      // Shares the step's model lookup with the prompt plugins. Warming must never fail the request it hooks, so an
+      // unreadable catalog falls back to the top-level setting.
+      const model: Model.Info | undefined = yield* resolveModel(ctx, event).pipe(Effect.orElseSucceed(() => undefined))
+      const configured = model?.settings?.cache?.warming
       const decoded = configured === undefined ? undefined : Option.getOrUndefined(decodeWarming(configured))
       if (configured !== undefined && decoded === undefined)
-        yield* Effect.logWarning("invalid cache.warming setting; using the top-level warming setting", { model: ref })
+        yield* Effect.logWarning("invalid cache.warming setting; using the top-level warming setting", { model: event.model })
       const warming = decoded ?? Config.latest(yield* config.entries(), "warming")
       if (!warming) return
       const settings = warming === true ? defaults : { ...defaults, ...warming }
@@ -105,7 +103,7 @@ export const Plugin = define({
         if (session.parentID) return
 
         const active = sessions.get(event.sessionID)
-        const settings = yield* loadSettings(event.model)
+        const settings = yield* loadSettings(event)
         if (!settings) {
           sessions.delete(event.sessionID)
           return
