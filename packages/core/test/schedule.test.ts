@@ -1,6 +1,6 @@
 import { describe, expect } from "bun:test"
 import type { FileSystem } from "@opencode/core/filesystem"
-import { DateTime, Effect, Fiber, Layer, LayerMap, Schema, Stream } from "effect"
+import { DateTime, Effect, Exit, Fiber, Layer, LayerMap, Queue, Schema, Stream } from "effect"
 import { TestClock } from "effect/testing"
 import { eq } from "drizzle-orm"
 import { Database } from "@opencode/core/database/database"
@@ -13,6 +13,7 @@ import { Permission } from "@opencode/core/permission"
 import { PermissionSaved } from "@opencode/core/permission/saved"
 import { Tool } from "@opencode/core/tool"
 import { McpTool } from "@opencode/core/tool/mcp"
+import { Instance } from "@opencode/core/instance/service"
 import { Location } from "@opencode/core/location"
 import { Project } from "@opencode/core/project"
 import { ProjectTable } from "@opencode/core/project/sql"
@@ -86,7 +87,7 @@ const toggled = Layer.succeed(
   }),
 )
 /** What the check tools see and do; reset by setup. */
-const slack = { replies: 0, reads: 0, posts: 0 }
+const slack = { replies: 0, reads: 0, posts: 0, exports: 0, failing: false }
 /** The default agent's permission rules; set after setup. */
 let agentRules: Permission.Ruleset = []
 // Reads assert their permission the way MCP tools do; with no rules it would ask.
@@ -117,9 +118,27 @@ const checkTools = Layer.effectDiscard(
             })
             .pipe(
               Effect.orDie,
-              Effect.map(() => {
+              Effect.flatMap(() => {
+                if (slack.failing) return Effect.fail(new Tool.Error({ message: "Slack is down" }))
                 slack.reads++
-                return { output: { replies: slack.replies } }
+                return Effect.succeed({ output: { replies: slack.replies } })
+              }),
+            ),
+      })
+      // Needs a second permission besides its own, which a check was never approved for.
+      editor.add({
+        name: "export_thread",
+        description: "Export the thread to a file",
+        input: Schema.Struct({}),
+        options: { namespace: "slack" },
+        execute: (_input, context) =>
+          permission
+            .assert({ action: "file_write", resources: ["*"], sessionID: context.sessionID, agent: context.agent })
+            .pipe(
+              Effect.orDie,
+              Effect.map(() => {
+                slack.exports++
+                return { content: "exported" }
               }),
             ),
       })
@@ -176,7 +195,15 @@ const locations = makeGlobalNode({
 })
 const it = testEffect(
   AppNodeBuilder.build(
-    LayerNode.group([Database.node, Bus.node, SessionProjector.node, SessionStore.node, Session.node, Schedule.node]),
+    LayerNode.group([
+      Database.node,
+      Bus.node,
+      SessionProjector.node,
+      SessionStore.node,
+      Session.node,
+      Schedule.node,
+      Instance.node,
+    ]),
     [
       Bus.node.replace(Bus.configured({ persist: true })),
       SessionExecution.node.replace(execution),
@@ -208,6 +235,8 @@ const setup = (directory = enabledDirectory) =>
     slack.replies = 0
     slack.reads = 0
     slack.posts = 0
+    slack.exports = 0
+    slack.failing = false
     agentRules = []
     return yield* Schedule.Service
   })
@@ -769,16 +798,46 @@ describe("Schedule", () => {
   )
 
   describe("check", () => {
-    const create = (code: string, allow = ["slack.read_thread"]) =>
+    /** Creates a check while the user answers each permission it asks for with `reply`; returns what was asked. */
+    const answer = (code: string, allow: ReadonlyArray<string>, reply: Permission.Reply) =>
       Effect.gen(function* () {
         const schedules = yield* Schedule.Service
-        return yield* schedules.create({
-          sessionID,
-          name: "thread",
-          when: { type: "every", every: "5 minutes" },
-          action: { type: "check", code, allow },
-        })
+        const bus = yield* Bus.Service
+        const instances = yield* Instance.Service
+        const sessions = yield* Session.Service
+        const session = yield* sessions.get(sessionID)
+        const asks = yield* Queue.unbounded<Permission.Request>()
+        const unsubscribe = yield* bus.listen((event) =>
+          event.type === Permission.Event.Asked.type
+            ? Queue.offer(asks, event.data as Permission.Request).pipe(Effect.asVoid)
+            : Effect.void,
+        )
+        yield* Effect.addFinalizer(() => unsubscribe)
+        const asked: Permission.Request[] = []
+        const replies = yield* Queue.take(asks).pipe(
+          Effect.tap((request) => Effect.sync(() => asked.push(request))),
+          Effect.flatMap((request) =>
+            Permission.Service.use((permission) => permission.reply({ requestID: request.id, reply })).pipe(
+              instances.provide(session),
+            ),
+          ),
+          Effect.forever,
+          Effect.forkChild,
+        )
+        const created = yield* schedules
+          .create({
+            sessionID,
+            name: "thread",
+            when: { type: "every", every: "5 minutes" },
+            action: { type: "check", code, allow },
+          })
+          .pipe(Effect.exit)
+        yield* Fiber.interrupt(replies)
+        return { created, asked }
       })
+    // Approves once, so every scheduled run would still ask if it were not unattended.
+    const create = (code: string, allow = ["slack.read_thread"]) =>
+      answer(code, allow, "once").pipe(Effect.flatMap((result) => result.created))
     const state = (schedule: Schedule.Info) =>
       Database.Service.use(({ db }) =>
         db
@@ -855,15 +914,102 @@ describe("Schedule", () => {
       }),
     )
 
-    it.effect("cannot call an allowlisted tool the agent's rules deny", () =>
+    it.effect("asks the user to approve each allowlisted tool when it is created", () =>
+      Effect.gen(function* () {
+        const schedules = yield* setup()
+        agentRules = [{ action: "slack_read_thread", resource: "*", effect: "ask" }]
+        const approved = yield* answer(watch, ["slack.read_thread"], "once")
+        expect(approved.asked).toMatchObject([
+          { action: "slack_read_thread", save: ["*"], metadata: { code: watch, allow: ["slack.read_thread"] } },
+        ])
+        expect(Exit.isSuccess(approved.created)).toBe(true)
+
+        const rejected = yield* answer(watch, ["slack.read_thread"], "reject")
+        expect(rejected.asked).toHaveLength(1)
+        expect(Exit.isFailure(rejected.created)).toBe(true)
+        expect(yield* schedules.list({ sessionID })).toHaveLength(1)
+      }),
+    )
+
+    it.effect("is not created when the agent's rules deny an allowlisted tool, or the tool is unknown", () =>
       Effect.gen(function* () {
         const schedules = yield* setup()
         agentRules = [{ action: "slack_read_thread", resource: "*", effect: "deny" }]
+        const denied = yield* answer(watch, ["slack.read_thread"], "once")
+        expect(denied.asked).toEqual([])
+        expect(denied.created).toMatchObject({
+          _tag: "Failure",
+          cause: { reasons: [{ error: { _tag: "Permission.BlockedError" } }] },
+        })
+        expect(yield* Effect.flip(create(watch, ["slack.missing"]))).toMatchObject({
+          _tag: "Schedule.InvalidError",
+          reason: "Unknown Code Mode tool: slack.missing",
+        })
+        expect(yield* schedules.list({ sessionID })).toEqual([])
+      }),
+    )
+
+    it.effect("denies an ask for a permission other than an allowlisted tool's own", () =>
+      Effect.gen(function* () {
+        const schedules = yield* setup()
+        const schedule = yield* create(`await tools.slack.export_thread({}); return { wake: true, state: null }`, [
+          "slack.export_thread",
+        ])
+        yield* TestClock.adjust("5 minutes")
+        yield* schedules.tick
+        expect(slack.exports).toBe(0)
+        expect(yield* pending).toEqual([])
+        expect(yield* schedules.get(schedule.id)).toMatchObject({ runCount: 0, lastOutcome: "failed" })
+      }),
+    )
+
+    it.effect("keeps its state and run count when a run fails", () =>
+      Effect.gen(function* () {
+        const schedules = yield* setup()
         const schedule = yield* create(watch)
         yield* TestClock.adjust("5 minutes")
         yield* schedules.tick
-        expect(slack.reads).toBe(0)
-        expect(yield* schedules.get(schedule.id)).toMatchObject({ runCount: 0, lastOutcome: "failed" })
+        slack.failing = true
+        yield* TestClock.adjust("5 minutes")
+        yield* schedules.tick
+        expect(yield* schedules.get(schedule.id)).toMatchObject({ runCount: 1, lastOutcome: "failed" })
+        expect(yield* state(schedule)).toEqual({ replies: 0, runs: 0 })
+      }),
+    )
+
+    it.effect("does not run while its last wake is unread", () =>
+      Effect.gen(function* () {
+        const schedules = yield* setup()
+        const schedule = yield* create(`await tools.slack.read_thread({}); return { wake: true, state: runs }`)
+        yield* TestClock.adjust("5 minutes")
+        yield* schedules.tick
+        expect(yield* pending).toEqual([messageID(schedule, 1)])
+        yield* TestClock.adjust("5 minutes")
+        yield* schedules.tick
+        expect(slack.reads).toBe(1)
+        expect(yield* pending).toEqual([messageID(schedule, 1)])
+        expect(yield* schedules.get(schedule.id)).toMatchObject({ runCount: 1, lastOutcome: "skipped" })
+        expect(yield* state(schedule)).toBe(0)
+
+        yield* deliver
+        yield* TestClock.adjust("5 minutes")
+        yield* schedules.tick
+        expect(yield* pending).toEqual([messageID(schedule, 2)])
+        expect(yield* state(schedule)).toBe(1)
+      }),
+    )
+
+    it.effect("may declare its own state, and wakes with the default text when its message is empty", () =>
+      Effect.gen(function* () {
+        const schedules = yield* setup()
+        const schedule = yield* create(`const state = 7\nreturn { wake: true, state, message: "" }`, [])
+        yield* TestClock.adjust("5 minutes")
+        yield* schedules.tick
+        const { db } = yield* Database.Service
+        expect(yield* SessionInbox.find(db, messageID(schedule, 1))).toMatchObject({
+          payload: { text: "Scheduled check thread woke this session" },
+        })
+        expect(yield* state(schedule)).toBe(7)
       }),
     )
 

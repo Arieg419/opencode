@@ -17,6 +17,7 @@ import { SessionInboxTable } from "./session/sql.js"
 import { ScheduleTable } from "./schedule/sql.js"
 import { Tool } from "./tool.js"
 import { McpTool } from "./tool/mcp.js"
+import { CodeModeTool } from "./codemode/tool.js"
 
 export const ID = ScheduleSchema.ID
 export type ID = ScheduleSchema.ID
@@ -37,14 +38,6 @@ export class InvalidError extends Schema.TaggedError<InvalidError>()("Schedule.I
   }
 }
 
-export class CheckError extends Schema.TaggedError<CheckError>()("Schedule.CheckError", {
-  reason: Schema.String,
-}) {
-  override get message() {
-    return this.reason
-  }
-}
-
 export class DisabledError extends Schema.TaggedError<DisabledError>()("Schedule.DisabledError", {}) {
   override get message() {
     return "Scheduled tasks are disabled; set experimental.schedules in config"
@@ -52,7 +45,10 @@ export class DisabledError extends Schema.TaggedError<DisabledError>()("Schedule
 }
 
 export interface Interface {
-  readonly create: (input: CreateInput) => Effect.Effect<Info, InvalidError | DisabledError | Session.NotFoundError>
+  /** For a check action, first asks the Session's user to approve each allowlisted tool, as a tool call would. */
+  readonly create: (
+    input: CreateInput,
+  ) => Effect.Effect<Info, InvalidError | DisabledError | Session.NotFoundError | Permission.Error>
   readonly list: (input?: { readonly sessionID?: SessionSchema.ID }) => Effect.Effect<Info[]>
   readonly get: (id: ID) => Effect.Effect<Info, NotFoundError>
   readonly pause: (id: ID) => Effect.Effect<Info, NotFoundError>
@@ -82,10 +78,10 @@ const MAX_SLEEP = 30_000
 const DISABLED_RETRY = HOUR
 /** How long a schedule whose prompt failed waits before trying again. */
 const FAILED_RETRY = 5 * MINUTE
-/** Each run of a check action; one that overruns fails like any other check failure. */
-const CHECK_LIMITS = { timeoutMs: 30_000, maxToolCalls: 20, maxOutputBytes: 64 * 1024 }
-/** Bytes of JSON a check may keep as its state between runs. */
-const MAX_CHECK_STATE = 32 * 1024
+/** How long one run of a check may take, MCP discovery included. */
+const CHECK_TIMEOUT = 30_000
+// A larger result fails decoding, so this also caps the state a check keeps between runs.
+const CHECK_LIMITS = { timeoutMs: CHECK_TIMEOUT, maxToolCalls: 20, maxOutputBytes: 32 * 1024 }
 
 const decodeCheckResult = Schema.decodeUnknownResult(
   Schema.Struct({ wake: Schema.Boolean, state: Schema.Json, message: Schema.optional(Schema.String) }),
@@ -148,6 +144,13 @@ const finished = (row: Pick<Row, "ends_at">, next: number | undefined, remaining
   next === undefined || (remaining !== null && remaining <= 0) || (row.ends_at !== null && next > row.ends_at)
 
 const optionalTime = (value: number | null) => (value === null ? undefined : DateTime.makeUnsafe(value))
+
+const promptText = (row: Row, checked: { readonly wake: boolean; readonly message?: string } | undefined) => {
+  if (row.action.type === "prompt") return row.action.prompt
+  if (!checked?.wake) return undefined
+  if (checked.message?.trim()) return checked.message
+  return `Scheduled check ${row.name ?? row.id} woke this session`
+}
 
 const toInfo = (row: Row): Info => ({
   id: row.id,
@@ -217,6 +220,46 @@ const layer = Layer.effect(
           Effect.map((row) => row !== undefined),
         )
 
+    // MCP tools register after discovery, as in SessionContext.
+    const checkTools = Effect.gen(function* () {
+      const mcp = yield* McpTool.Service
+      const tools = yield* Tool.Service
+      yield* mcp.flush
+      return tools
+    })
+
+    // Run in the Session's location. A user approves each allowlisted tool here, while present; runs never ask.
+    const approve = Effect.fnUntraced(function* (
+      session: SessionSchema.Info,
+      name: string | undefined,
+      action: ScheduleSchema.CheckAction,
+    ) {
+      const permission = yield* Permission.Service
+      const agents = yield* Agent.Service
+      const tools = yield* checkTools
+      const agent = yield* agents.select(session.agent)
+      const registered = yield* tools.list()
+      yield* Effect.forEach(
+        action.allow,
+        (path) =>
+          Effect.gen(function* () {
+            const tool = registered.find(
+              (tool) => tool.options?.codemode !== false && CodeModeTool.qualifiedName(tool) === path,
+            )
+            if (!tool) return yield* new InvalidError({ reason: `Unknown Code Mode tool: ${path}` })
+            yield* permission.assert({
+              action: tool.options?.permission ?? tool.id,
+              resources: ["*"],
+              save: ["*"],
+              metadata: { schedule: name, code: action.code, allow: action.allow },
+              sessionID: session.id,
+              agent: agent.id,
+            })
+          }),
+        { discard: true },
+      )
+    })
+
     // A failed, timed out or invalid check fails the firing, which backs off like a failed prompt.
     const check = Effect.fnUntraced(
       function* (
@@ -226,17 +269,15 @@ const layer = Layer.effect(
         messageID: SessionMessage.ID,
         now: number,
       ) {
-        const mcp = yield* McpTool.Service
         const agents = yield* Agent.Service
-        const tools = yield* Tool.Service
-        // MCP tools register after discovery, as in SessionContext.
-        yield* mcp.flush
+        const tools = yield* checkTools
         const agent = yield* agents.select(session.agent)
-        if (!agent.info) return yield* new CheckError({ reason: `Agent not found: ${agent.id}` })
+        if (!agent.info) return yield* new InvalidError({ reason: `Agent not found: ${agent.id}` })
         const input = JSON.stringify({ state: row.state ?? null, now, runs: row.run_count })
         const result = yield* tools.check({
-          // Bound on the program's first line, so diagnostics keep the author's line numbers.
-          code: `const input = ${input}; const { state, now, runs } = input; ${action.code}`,
+          // Bound on the program's first line, so diagnostics keep the author's line numbers. The program runs in a
+          // block, so it may declare its own state; it must return its result, as a final expression is not used.
+          code: `const input = ${input}; const { state, now, runs } = input; {${action.code}\n}`,
           allow: action.allow,
           permissions: Permission.merge(agent.info.permissions, session.permissions ?? []),
           limits: CHECK_LIMITS,
@@ -248,16 +289,22 @@ const layer = Layer.effect(
             progress: () => Effect.void,
           },
         })
-        if (!result.ok) return yield* new CheckError({ reason: result.error.message })
+        if (!result.ok) return yield* new InvalidError({ reason: result.error.message })
         const decoded = decodeCheckResult(result.value)
         if (Result.isFailure(decoded))
-          return yield* new CheckError({ reason: `A check must return { wake, state, message? }: ${decoded.failure}` })
-        const size = Buffer.byteLength(JSON.stringify(decoded.success.state))
-        if (size > MAX_CHECK_STATE)
-          return yield* new CheckError({ reason: `Check state is ${size} bytes; the limit is ${MAX_CHECK_STATE}` })
+          return yield* new InvalidError({
+            reason: `A check must return { wake, state, message? }: ${decoded.failure}`,
+          })
         return decoded.success
       },
-      (effect, _row, _action, session) => effect.pipe(instances.provide(session)),
+      (effect, _row, _action, session) =>
+        effect.pipe(
+          Effect.timeoutOrElse({
+            duration: CHECK_TIMEOUT,
+            orElse: () => new InvalidError({ reason: `Check timed out after ${CHECK_TIMEOUT}ms` }),
+          }),
+          instances.provide(session),
+        ),
     )
 
     const fire = Effect.fnUntraced(function* (row: Row, session: SessionSchema.Info, due: number, now: number) {
@@ -266,12 +313,7 @@ const layer = Layer.effect(
       const id = SessionMessage.ID.make(`msg_${row.id}_${run}`)
       const late = now - due >= LATE_AFTER
       const checked = row.action.type === "check" ? yield* check(row, row.action, session, id, now) : undefined
-      const text =
-        row.action.type === "prompt"
-          ? row.action.prompt
-          : checked?.wake
-            ? (checked.message ?? `Scheduled check ${row.name ?? row.id} woke this session`)
-            : undefined
+      const text = promptText(row, checked)
       if (text !== undefined)
         yield* sessions.prompt({
           sessionID: session.id,
@@ -292,7 +334,9 @@ const layer = Layer.effect(
       const next = following(row, now)
       const remaining = row.remaining_runs === null ? null : row.remaining_runs - 1
       const done = finished(row, next, remaining)
-      // Record the run even if a pause landed during the prompt, or the next firing would reuse this message id.
+      // Record the run even if a pause landed during the prompt, or the next firing would reuse this message id. A
+      // crash before this update runs a check again on the next tick: its tools are called twice and it may decide
+      // differently, but a wake reuses this run's id, so the run still admits at most one prompt.
       yield* db
         .update(ScheduleTable)
         .set({
@@ -368,7 +412,8 @@ const layer = Layer.effect(
                   ),
             ),
           ),
-        { discard: true },
+        // A slow check must not hold up other schedules.
+        { discard: true, concurrency: "unbounded" },
       )
     }, Effect.withSpan("Schedule.tick"))
 
@@ -478,6 +523,12 @@ const layer = Layer.effect(
         const ends = yield* endsAt(input.ends, zone, now)
         if (ends !== null && due > ends)
           return yield* new InvalidError({ reason: "The schedule ends before it first fires" })
+        // Last, so the user is not asked to approve a schedule that would be rejected anyway.
+        if (input.action.type === "check")
+          yield* approve(session, input.name, input.action).pipe(
+            instances.provide(session),
+            Effect.catchTag("FileSystem.DirectoryNotFoundError", Effect.die),
+          )
         const row = yield* db
           .insert(ScheduleTable)
           .values({
