@@ -18,7 +18,7 @@
         "headers": {
           "content-type": "application/json"
         },
-        "body": "{\"prompt\":\"A simple flat black circle centered on a plain white background.\",\"image_size\":{\"width\":512,\"height\":512},\"output_format\":\"jpeg\"}"
+        "body": "{\"prompt\":\"A simple flat black circle centered on a plain white background.\",\"image_size\":{\"width\":512,\"height\":512},\"sync_mode\":false,\"output_format\":\"jpeg\"}"
       },
       "response": {
         "status": 200,

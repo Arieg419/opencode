@@ -36,6 +36,7 @@ import {
   Fireworks,
   Google,
   Meta,
+  MiniMax,
   OpenCode,
   OpenAI,
   OpenAICompatible,
@@ -179,6 +180,8 @@ describe("public exports", () => {
     expect(Meta.provider.image).toBe(Meta.image)
     expect(ZAI.configure({ apiKey: "fixture" }).image("glm-image").route.id).toBe("zai-images")
     expect(ZAI.provider.image).toBe(ZAI.image)
+    expect(MiniMax.configure({ apiKey: "fixture" }).image("image-01").route.id).toBe("minimax-images")
+    expect(MiniMax.provider.image).toBe(MiniMax.image)
     expect(Alibaba.configure({ region: "ap-southeast-1", apiKey: "fixture" }).image("qwen-image-2.0").route.id).toBe(
       "alibaba-images",
     )

@@ -25,6 +25,8 @@ export type FalImageOptions = {
   /** Inpainting mask, sent as `mask_url`. */
   readonly mask?: Media.Asset
   readonly enable_safety_checker?: boolean
+  /** Defaults to `true`, which returns images inline as data URIs; `false` returns hosted URLs. */
+  readonly sync_mode?: boolean
 } & Record<string, unknown>
 
 export type Request = ImageRequestFor<FalImageOptions>
@@ -96,6 +98,7 @@ const fromRequest = Effect.fn("FalImages.fromRequest")(function* (request: Reque
         image_urls: list && images.length > 0 ? images : undefined,
         image_url: list ? undefined : images[0],
         mask_url: mask === undefined ? undefined : yield* FalQueue.mediaUrl(mask, route.name),
+        sync_mode: true,
       },
       native,
       request.http?.body,
@@ -114,10 +117,8 @@ const decodeResult = Effect.fn("FalImages.decodeResult")(function* (
   context: MediaProtocol.PollContext<FalQueue.Token>,
 ) {
   const output = yield* decodeQueueResult(response)
-  const { images, seed, has_nsfw_concepts, ...rest } = output.value
+  const { images, seed, ...rest } = output.value
   if (images.length === 0) return yield* output.invalid(`${route.name} returned no images`)
-  // With the safety checker on, flagged images come back blacked out rather than omitted.
-  const flagged = (has_nsfw_concepts ?? []).flatMap((value, index) => (value ? [index] : []))
   return new ImageResponse({
     images: images.map((image) => {
       const info = { width: image.width ?? undefined, height: image.height ?? undefined }
@@ -127,13 +128,6 @@ const decodeResult = Effect.fn("FalImages.decodeResult")(function* (
         Media.url(image.url, { mediaType: image.content_type ?? undefined, info })
       )
     }),
-    notices:
-      flagged.length === 0
-        ? undefined
-        : flagged.map((index) => ({
-            type: "moderated" as const,
-            message: `${route.name} flagged image ${index} as NSFW`,
-          })),
     providerMetadata: { fal: { requestId: context.token.requestID, seed: seed ?? undefined, ...rest } },
   })
 })

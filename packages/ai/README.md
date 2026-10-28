@@ -50,6 +50,91 @@ Run `LLM.stream(...)` instead of `generate` when you want incremental `LLMEvent`
 `LLM.request(...)`. The event stream is provider-neutral — same shape across OpenAI Chat, OpenAI Responses,
 Anthropic Messages, Gemini, Bedrock Converse, and any OpenAI-compatible deployment.
 
+### Tool loop
+
+`stream` runs one model call; `loop` runs the model's tool calls and calls the model again until it stops calling
+tools. Events from every step arrive on one stream, with a `tool-result` after each tool runs. `until` is checked
+after each step that has tool calls, with every step's `LLMResponse`; returning `true` ends the loop without running
+them. `AI.tool` takes a plain `async` execute; a throw or rejection goes back to the model as an error result, and
+`signal` aborts when the loop is interrupted.
+`Tool.make` from `@opencode/ai/effect` is the Effect form, with a validated `success` schema:
+
+```ts
+import { readFile } from "node:fs/promises"
+import { Schema } from "effect"
+import { AI } from "@opencode/ai"
+
+const read_file = AI.tool({
+  description: "Read a UTF-8 file.",
+  parameters: Schema.Struct({ path: Schema.String }),
+  execute: ({ path }, { signal }) => readFile(path, { encoding: "utf8", signal }),
+})
+
+const events = ai.llm.loop({
+  model,
+  prompt: "Summarize package.json.",
+  tools: { read_file },
+  until: ({ steps }) => steps.length >= 8,
+})
+for await (const event of events) {
+  if (event.type === "text-delta") process.stdout.write(event.text)
+}
+```
+
+### Freeform tools
+
+A tool with exactly one required string parameter can set `freeform`, so the model writes that parameter as raw text
+instead of JSON arguments: unconstrained `text`, or text matching a `regex` or `lark` grammar.
+
+```ts
+const run_code = AI.tool({
+  description: "Run JavaScript",
+  parameters: Schema.Struct({ code: Schema.String }),
+  freeform: { type: "lark", grammar: JS_GRAMMAR },
+  execute: ({ code }) => runCode(code),
+})
+```
+
+OpenAI Responses and Chat Completions, and every provider that reuses them, send it as a
+[custom tool](https://platform.openai.com/docs/guides/function-calling#custom-tools). Other protocols send the normal
+JSON tool. Only set `freeform` for models that accept custom tools in that format; nothing checks this or falls back
+to JSON, so an unsupported model returns the provider's error. Calls, tool input events, results and history always
+use the `{ code }` object, and past calls replay the way the tool is declared in the current request, so the same
+history works with or without `freeform`.
+
+### Structured output
+
+`generateObject` forces a tool call and decodes its input against `schema`; pass `jsonSchema` instead for an
+unvalidated `unknown` object:
+
+```ts
+const { object } = await ai.llm.generateObject({
+  model,
+  prompt: "Pick a city.",
+  schema: Schema.Struct({ city: Schema.String }),
+})
+```
+
+### Raw provider events
+
+Set `includeRaw: true` on a request to also receive every provider frame as `{ type: "raw", data }`, in order and
+before the events parsed from that frame. `data` is the parsed JSON frame, so frames this package doesn't handle yet
+are visible too. Raw events are off by default, and `generate` ignores them. Translate a frame with a stream map:
+
+```ts
+import { Stream } from "effect"
+import { LLM, LLMEvent } from "@opencode/ai/effect"
+
+const flagged = (data: unknown) =>
+  typeof data === "object" && data !== null && "type" in data && data.type === "moderation.flagged"
+
+const events = LLM.stream({ model, prompt: "Say hello.", includeRaw: true }).pipe(
+  Stream.map((event) =>
+    event.type === "raw" && flagged(event.data) ? LLMEvent.providerError({ message: "Flagged by moderation" }) : event,
+  ),
+)
+```
+
 ### Google Interactions
 
 `Google.configure({ apiKey }).interactions(modelID)` selects the Interactions API; `.model(modelID)` still selects
@@ -191,7 +276,10 @@ const [refund, department] = response.answers
 ```
 
 `input` is a JSON object or an ordered list of `text`, `json` and `media` parts. Answers come back in question order.
-A question the host declines is `{ name, type: "error", reason: "refusal" }`; the other answers still come back.
+A question the host declines is `{ name, type: "error", reason, message? }`, with `reason` such as `"refusal"`; the
+other answers still come back.
+`response.usage` has `inputTokens`, `outputTokens`, `totalTokens` and the host's reported `cost` when it sends one;
+the host's raw usage stays in `providerMetadata`.
 Media goes wherever the host reads it, and a kind the host has no place for fails the call. Host-specific fields go in
 `providerOptions`, typed by the selected model (OpenAI `promptCacheKey` and `safetyIdentifier`, OpenRouter
 `provider` routing, Baseten `max_len`).
@@ -498,7 +586,9 @@ M2.x models always think, even when a disabling option is supplied. For tool con
 `response.message` in history before adding `Message.tool(...)` results; this preserves reasoning and any signatures.
 
 The default API bases are `https://api.minimax.io/anthropic/v1` for Messages and `https://api.minimax.io/v1` for
-Chat and Responses. `configure({ baseURL })` replaces the selected API's base, including its version prefix.
+Chat, Responses and Images. `configure({ baseURL })` replaces the selected API's base, including its version prefix;
+use `https://api.minimax.cn/v1` for the mainland China platform. `minimax.image("image-01")` (also
+`@opencode/ai/providers/minimax/images`) generates images; see [MiniMax images](#minimax-images).
 
 ## Meta
 
@@ -564,7 +654,7 @@ const edit = Image.generate({
 
 The default image format is WEBP; `outputFormat` also accepts PNG/JPEG and `responseFormat: "url"`
 returns a signed URL. `aspect` lowers to Meta's `size`, which is only an aspect-ratio hint: Meta renders about 2.5
-megapixels whatever you ask, so `resolution` is ignored with a notice. For conversational images, select
+megapixels whatever you ask, so `resolution` is ignored. For conversational images, select
 `meta.responses("muse-image-1.0")` with `tools: [Meta.imageGeneration({ reasoningStrength: "low" })]`.
 Generated images are provider-executed tool results with file content. Retain `response.message` to
 replay the signed image handle on the next request. Muse Image accepts only the `image_generation` tool.
@@ -604,18 +694,19 @@ const program = Effect.gen(function* () {
 })
 ```
 
-Common fields are portable in shape, not in support. A route that has to approximate `aspect` or `resolution`
-returns what it used in `response.notices`; one that cannot honor them fails with a typed `AIError` before any network
-call rather than dropping them, so check this table before swapping only the `model`:
+Common fields are portable in shape, not in support. Some routes approximate `aspect` or `resolution` with the nearest
+size they offer; others fail with a typed `AIError` before any network call rather than dropping them, so check this
+table before swapping only the `model`:
 
 | Provider              | `n` | `aspect`             | `resolution`          | `images`                         | Moved to `providerOptions`                         |
 | --------------------- | --- | -------------------- | --------------------- | -------------------------------- | -------------------------------------------------- |
-| OpenAI                | ✓¹  | nearest size, notice | nearest size, notice  | ✓                                | `size`, `outputFormat`, `mask`                     |
+| OpenAI                | ✓¹  | nearest size         | nearest size          | ✓                                | `size`, `outputFormat`, `mask`                     |
 | Google (Gemini)       | 1   | ✓                    | ✓ (`imageSize`)       | ✓ (no public URLs)               | `seed`                                             |
-| xAI                   | ✓   | ✓                    | `1k`/`2k`, notice     | ✓                                | none                                               |
-| Meta                  | ✓   | ✓ (hint)             | ignored, notice       | ✓                                | `size`, `outputFormat`                             |
+| xAI                   | ✓   | ✓                    | `1k`/`2k`             | ✓                                | none                                               |
+| Meta                  | ✓   | ✓ (hint)             | ignored               | ✓                                | `size`, `outputFormat`                             |
 | Z.ai                  | ✗   | width × height       | width × height        | ✗                                | `size`                                             |
 | Alibaba               | ✓   | width × height       | width × height        | ✓                                | `size`, `seed`                                     |
+| MiniMax               | ✓   | preset or w × h⁴     | preset or w × h⁴      | 1 (portrait subject)             | `aspect_ratio`, `width`, `height`, `seed`          |
 | Black Forest Labs     | 1   | per model            | width × height models | per model (1–8)                  | `width`, `height`, `seed`, `output_format`, `mask` |
 | fal                   | ✓   | per model            | per model             | 1 (several on `/edit`, `/multi`) | `image_size`, `seed`, `output_format`, `mask`      |
 | Replicate             | ✗   | ✗                    | ✗                     | ✗ (use `providerOptions`)        | everything                                         |
@@ -631,7 +722,8 @@ fixed sizes. `providerOptions.size` replaces `aspect` and `resolution`, so setti
 forwards `outputFormat` but does not apply it, so the returned bytes keep the upstream model's own format. ² Workers AI
 `@cf/black-forest-labs/flux-1-schnell` takes no size, and the provider rejects it. ³ Non-OpenAI gateway models
 (`bfl/flux-2-pro`) get a computed width × height, which the gateway passes through; models with a fixed list, such as
-Recraft, reject sizes outside it.
+Recraft, reject sizes outside it. ⁴ MiniMax sends its `aspect_ratio` preset for a preset aspect at about `1K` and an
+exact width × height (512–2048 px, steps of 8) otherwise; `image-01-live` takes only the presets, minus `21:9`.
 
 `Media.Asset` is the one asset type shared by image requests, image responses, LLM messages, and tool results.
 `asset.source` is the serializable `Media.Source` (`bytes`, `base64`, `url`, or `ref`); `asset.bytes()`,
@@ -703,7 +795,7 @@ const xai = Image.generate({
   aspect: "16:9",
   resolution: "1K",
   providerOptions: {
-    responseFormat: "b64_json",
+    responseFormat: "url", // defaults to "b64_json" (inline bytes)
     future_option: true,
   },
   http,
@@ -759,6 +851,26 @@ const zai = Image.generate({
 Z.ai does not include trustworthy MIME metadata for output URLs, so generated images use
 `application/octet-stream` until materialized. Output URLs expire after 30 days; call `asset.materialize()` and
 persist the bytes promptly if they must remain available.
+
+### MiniMax images
+
+```ts
+import { MiniMax } from "@opencode/ai/providers"
+
+const minimax = Image.generate({
+  model: MiniMax.configure({ apiKey }).image("image-01"),
+  prompt,
+  n: 2,
+  aspect: "16:9",
+  images: [Media.url("https://example.com/portrait.jpg")], // optional subject reference
+  providerOptions: { promptOptimizer: true, seed: 42 },
+})
+```
+
+The reference image is sent as a `character` subject, so it should be a single front-facing portrait. Images come
+back inline (`responseFormat: "base64"` by default); `responseFormat: "url"` returns links that expire after 24 hours
+and carry no MIME type until materialized. MiniMax status codes map to typed errors; code 1026 is a `ContentPolicy`
+error.
 
 ### Partial images
 
@@ -899,8 +1011,9 @@ failures (rate limits, provider 5xx, network errors) with backoff that honors `r
 `poll.timeout`; submits and cancels never retry. Interrupting a wait (or aborting its `signal`) does not cancel the
 provider job, which keeps running and billing: call `cancel()` to stop it. Failed,
 cancelled, and expired generations fail typed with the provider's terminal document on `reason.body`; moderation
-outcomes (Veo `raiMediaFilteredReasons`, xAI `respect_moderation`, Runway `SAFETY.*` codes) surface as `notices` when
-a video is still returned and as a `ContentPolicy` reason when nothing is.
+outcomes (Veo `raiMediaFilteredReasons`, xAI `respect_moderation`, Runway `SAFETY.*` codes) fail with a
+`ContentPolicy` reason when no video comes back; when one still does, Veo and xAI keep the raw outcome in
+`providerMetadata`.
 
 Provider notes:
 
@@ -1092,6 +1205,7 @@ Everything below is exported from `@opencode/ai/effect` unless noted.
 
 - **`LLM.request({...})`** — build a provider-neutral `LLMRequest`. Accepts ergonomic inputs (`system: string`, `prompt: string`) that normalize into the canonical Schema classes.
 - **`LLM.generate` / `LLM.stream`** — run direct input or an `LLMRequest` through `LLMClient` for one-import use.
+- **`LLM.loop`** — stream model calls, running `Tool.make(...)` tools between them until the model stops calling tools.
 - **`Message.user(...)` / `Message.assistant(...)` / `Message.tool(...)`** — message constructors from the canonical schema model.
 - **`LanguageModel.make(...)` / `ToolCallPart.make(...)` / `ToolResultPart.make(...)` / `ToolDefinition.make(...)`** — model and tool-related constructors from the canonical schema model.
 - **`LLMEvent.is.*`** — typed guards (`is.textDelta`, `is.toolCall`, `is.finish`, …) for filtering streams.

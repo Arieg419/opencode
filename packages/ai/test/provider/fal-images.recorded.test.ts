@@ -28,7 +28,7 @@ describe("fal Images recorded", () => {
             prompt: "A simple flat black circle centered on a plain white background.",
             aspect: "1:1",
             resolution: "0.5K",
-            providerOptions: { output_format: "jpeg" },
+            providerOptions: { output_format: "jpeg", sync_mode: false },
           },
           { poll: queuedPoll },
         )
