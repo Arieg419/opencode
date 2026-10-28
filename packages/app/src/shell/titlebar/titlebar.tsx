@@ -497,7 +497,7 @@ export function Titlebar(props: { verticalTabs?: { mount?: HTMLElement } }) {
                   type="button"
                   data-titlebar-tab-action
                   data-action="vertical-tabs-search"
-                  class="group flex h-7 w-full shrink-0 items-center gap-1.5 rounded-[6px] ps-1.5 pe-2 text-[13px] leading-4 text-v2-text-text-faint hover:text-v2-text-text-base"
+                  class="group flex h-7 w-full shrink-0 items-center gap-1.5 rounded-[6px] ps-1.5 pe-2 text-[13px] leading-4 text-v2-text-text-faint"
                   onClick={() => command.trigger("sessions.search")}
                 >
                   <Icon name="magnifying-glass" class="shrink-0" />
@@ -528,6 +528,7 @@ export function Titlebar(props: { verticalTabs?: { mount?: HTMLElement } }) {
                 id: "sessions.search",
                 title: language.t("command.session.search"),
                 category: language.t("command.category.session"),
+                keybind: "mod+shift+f",
                 onSelect: async () => {
                   const { DialogSessionSearch } = await import("@/shell/commands/session-search")
                   void dialog.show(() => <DialogSessionSearch />)
