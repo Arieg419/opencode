@@ -1835,7 +1835,8 @@ describe("ShellTool", () => {
         Effect.forkChild({ startImmediately: true }),
       )
       const id = yield* Deferred.await(started)
-      const deadline = Date.now() + 10_000
+      // PowerShell can take several seconds to start on loaded Windows runners.
+      const deadline = Date.now() + 20_000
       while (!(yield* shell.output(id, { limit: Number.MAX_SAFE_INTEGER })).output.includes("output-end")) {
         if (Date.now() > deadline) return yield* Effect.die(new Error("Timed out waiting for shell output"))
         yield* Effect.promise(() => Bun.sleep(5))
