@@ -22,15 +22,22 @@ const fetch = (input: string | URL, init: Init = {}) =>
     const execution = yield* CodeModeExecution.Service
     const permission = yield* Permission.Service
     // The same rules as the webfetch tool, so a URL denied there is denied here.
-    yield* permission.assert({
-      action: "webfetch",
-      resources: [url],
-      save: ["*"],
-      metadata: display([input, init]),
-      sessionID: execution.sessionID,
-      agent: execution.agent,
-      source: { type: "tool", messageID: execution.messageID, id: execution.id },
-    })
+    yield* permission
+      .assert({
+        action: "webfetch",
+        resources: [url],
+        save: ["*"],
+        metadata: display([input, init]),
+        sessionID: execution.sessionID,
+        agent: execution.agent,
+        source: { type: "tool", messageID: execution.messageID, id: execution.id },
+      })
+      .pipe(
+        // The feedback is the user talking to the model, so it must reach the program as the error's message.
+        Effect.catchTag("Permission.CorrectedError", (error) =>
+          Effect.fail(new Error(`The user rejected fetching ${url}: ${error.feedback}`)),
+        ),
+      )
     return yield* Effect.tryPromise({ try: () => send(input, init), catch: (error) => error })
   })
 

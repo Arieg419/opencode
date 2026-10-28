@@ -87,6 +87,23 @@ describe("fetch permissions", () => {
     ])
   })
 
+  test("a rejection with feedback reaches the program as the error message", async () => {
+    hits.length = 0
+    const url = `${server.url.origin}/corrected`
+    const corrected = permissionService({
+      assert: () => Effect.fail(new Permission.CorrectedError({ feedback: "use the docs site instead" })),
+    })
+    const result = await Effect.runPromise(
+      createCodeMode(new Map(), corrected).execute(
+        { code: `try { await fetch("${url}") } catch (e) { return e.message }` },
+        context,
+      ),
+    )
+
+    expect(result.output.output).toBe(`The user rejected fetching ${url}: use the docs site instead`)
+    expect(hits).toEqual([])
+  })
+
   test("a URL denied for webfetch is never requested and rejects like a failed fetch", async () => {
     hits.length = 0
     const url = `${server.url.origin}/denied`
