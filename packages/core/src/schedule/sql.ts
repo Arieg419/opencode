@@ -1,5 +1,6 @@
 import { sql } from "drizzle-orm"
 import { index, integer, sqliteTable, text } from "drizzle-orm/sqlite-core"
+import type { Schema } from "effect"
 import type { Schedule } from "@opencode/schema/schedule"
 import { Timestamps } from "../database/schema.sql.js"
 import type { SessionMessage } from "../session/message.js"
@@ -28,6 +29,8 @@ export const ScheduleTable = sqliteTable(
     last_outcome: text().$type<Schedule.Outcome>(),
     /** The loop leaves a due row alone until then, e.g. while its location has schedules turned off. */
     retry_at: integer(),
+    /** What a check action's last run returned as `state`. */
+    state: text({ mode: "json" }).$type<Schema.Json>(),
     ...Timestamps,
   },
   (table) => [

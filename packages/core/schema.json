@@ -1,8 +1,8 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "23940db2-8b4e-4a5e-a404-70d785bd788c",
-  "prevIds": ["44bd8ca5-689a-410e-a46a-958eb5accd97"],
+  "id": "b4c00e12-5c6d-42f3-8ebc-751d6dbabb02",
+  "prevIds": ["23940db2-8b4e-4a5e-a404-70d785bd788c"],
   "ddl": [
     {
       "name": "account_state",
@@ -895,6 +895,16 @@
       "default": null,
       "generated": null,
       "name": "retry_at",
+      "entityType": "columns",
+      "table": "schedule"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "state",
       "entityType": "columns",
       "table": "schedule"
     },

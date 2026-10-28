@@ -4,15 +4,19 @@ import { and, asc, eq, gt, isNull, lte, min, or } from "drizzle-orm"
 import { Cause, Clock, Context, Cron, DateTime, Effect, Latch, Layer, Option, Result, Schema } from "effect"
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
 import { Schedule as ScheduleSchema } from "@opencode/schema/schedule"
+import { Agent } from "./agent.js"
 import { Config } from "./config.js"
 import { Database } from "./database/database.js"
 import { Instance } from "./instance/service.js"
+import { Permission } from "./permission.js"
 import { Session } from "./session.js"
 import { SessionExecution } from "./session/execution.js"
 import { SessionMessage } from "./session/message.js"
 import { SessionSchema } from "./session/schema.js"
 import { SessionInboxTable } from "./session/sql.js"
 import { ScheduleTable } from "./schedule/sql.js"
+import { Tool } from "./tool.js"
+import { McpTool } from "./tool/mcp.js"
 
 export const ID = ScheduleSchema.ID
 export type ID = ScheduleSchema.ID
@@ -26,6 +30,14 @@ export class NotFoundError extends Schema.TaggedError<NotFoundError>()("Schedule
 }) {}
 
 export class InvalidError extends Schema.TaggedError<InvalidError>()("Schedule.InvalidError", {
+  reason: Schema.String,
+}) {
+  override get message() {
+    return this.reason
+  }
+}
+
+export class CheckError extends Schema.TaggedError<CheckError>()("Schedule.CheckError", {
   reason: Schema.String,
 }) {
   override get message() {
@@ -70,6 +82,14 @@ const MAX_SLEEP = 30_000
 const DISABLED_RETRY = HOUR
 /** How long a schedule whose prompt failed waits before trying again. */
 const FAILED_RETRY = 5 * MINUTE
+/** Each run of a check action; one that overruns fails like any other check failure. */
+const CHECK_LIMITS = { timeoutMs: 30_000, maxToolCalls: 20, maxOutputBytes: 64 * 1024 }
+/** Bytes of JSON a check may keep as its state between runs. */
+const MAX_CHECK_STATE = 32 * 1024
+
+const decodeCheckResult = Schema.decodeUnknownResult(
+  Schema.Struct({ wake: Schema.Boolean, state: Schema.Json, message: Schema.optional(Schema.String) }),
+)
 
 const duration = (value: string) =>
   Option.match(ScheduleSchema.durationMillis(value), {
@@ -197,18 +217,78 @@ const layer = Layer.effect(
           Effect.map((row) => row !== undefined),
         )
 
-    const fire = Effect.fnUntraced(function* (row: Row, sessionID: SessionSchema.ID, due: number, now: number) {
+    // A failed, timed out or invalid check fails the firing, which backs off like a failed prompt.
+    const check = Effect.fnUntraced(
+      function* (
+        row: Row,
+        action: ScheduleSchema.CheckAction,
+        session: SessionSchema.Info,
+        messageID: SessionMessage.ID,
+        now: number,
+      ) {
+        const mcp = yield* McpTool.Service
+        const agents = yield* Agent.Service
+        const tools = yield* Tool.Service
+        // MCP tools register after discovery, as in SessionContext.
+        yield* mcp.flush
+        const agent = yield* agents.select(session.agent)
+        if (!agent.info) return yield* new CheckError({ reason: `Agent not found: ${agent.id}` })
+        const input = JSON.stringify({ state: row.state ?? null, now, runs: row.run_count })
+        const result = yield* tools.check({
+          // Bound on the program's first line, so diagnostics keep the author's line numbers.
+          code: `const input = ${input}; const { state, now, runs } = input; ${action.code}`,
+          allow: action.allow,
+          permissions: Permission.merge(agent.info.permissions, session.permissions ?? []),
+          limits: CHECK_LIMITS,
+          context: {
+            sessionID: session.id,
+            agent: agent.id,
+            messageID,
+            id: Tool.CallID.make(`call_${messageID}`),
+            progress: () => Effect.void,
+          },
+        })
+        if (!result.ok) return yield* new CheckError({ reason: result.error.message })
+        const decoded = decodeCheckResult(result.value)
+        if (Result.isFailure(decoded))
+          return yield* new CheckError({ reason: `A check must return { wake, state, message? }: ${decoded.failure}` })
+        const size = Buffer.byteLength(JSON.stringify(decoded.success.state))
+        if (size > MAX_CHECK_STATE)
+          return yield* new CheckError({ reason: `Check state is ${size} bytes; the limit is ${MAX_CHECK_STATE}` })
+        return decoded.success
+      },
+      (effect, _row, _action, session) => effect.pipe(instances.provide(session)),
+    )
+
+    const fire = Effect.fnUntraced(function* (row: Row, session: SessionSchema.Info, due: number, now: number) {
       const run = row.run_count + 1
       // The id is derived from the run, so retrying after a crash reconciles with the earlier admission.
       const id = SessionMessage.ID.make(`msg_${row.id}_${run}`)
       const late = now - due >= LATE_AFTER
-      yield* sessions.prompt({
-        sessionID,
-        id,
-        text: row.action.prompt,
-        delivery: "steer",
-        metadata: { schedule: { id: row.id, name: row.name ?? undefined, run, dueAt: due, late } },
-      })
+      const checked = row.action.type === "check" ? yield* check(row, row.action, session, id, now) : undefined
+      const text =
+        row.action.type === "prompt"
+          ? row.action.prompt
+          : checked?.wake
+            ? (checked.message ?? `Scheduled check ${row.name ?? row.id} woke this session`)
+            : undefined
+      if (text !== undefined)
+        yield* sessions.prompt({
+          sessionID: session.id,
+          id,
+          text,
+          delivery: "steer",
+          metadata: {
+            schedule: {
+              id: row.id,
+              name: row.name ?? undefined,
+              run,
+              dueAt: due,
+              late,
+              ...(checked ? { check: true } : {}),
+            },
+          },
+        })
       const next = following(row, now)
       const remaining = row.remaining_runs === null ? null : row.remaining_runs - 1
       const done = finished(row, next, remaining)
@@ -217,9 +297,10 @@ const layer = Layer.effect(
         .update(ScheduleTable)
         .set({
           run_count: run,
-          last_message_id: id,
           last_fired_at: now,
-          last_outcome: late ? "late" : "fired",
+          last_outcome: text === undefined ? "checked" : late ? "late" : "fired",
+          ...(text === undefined ? {} : { last_message_id: id }),
+          ...(checked ? { state: checked.state } : {}),
           retry_at: null,
           remaining_runs: remaining,
           ...(done ? { status: "done" as const } : {}),
@@ -255,7 +336,7 @@ const layer = Layer.effect(
         })
         return
       }
-      yield* fire(row, session.id, due, now)
+      yield* fire(row, session, due, now)
     })
 
     const tickAt = Effect.fnUntraced(function* (now: number) {
@@ -387,6 +468,8 @@ const layer = Layer.effect(
         const session = yield* sessions.get(input.sessionID)
         const config = yield* settings(session).pipe(Effect.orDie)
         if (!config.enabled) return yield* new DisabledError()
+        if (input.action.type === "check" && input.action.code.trim() === "")
+          return yield* new InvalidError({ reason: "A check needs code" })
         const zone = yield* resolveZone(input.when.tz ?? config.timezone)
         const now = yield* Clock.currentTimeMillis
         const due = yield* firstDue(input.when, zone, now)

@@ -104,16 +104,10 @@ export const create = (
                 Effect.gen(function* () {
                   const index = yield* Ref.getAndUpdate(callIndex, (index) => index + 1)
                   const executed = yield* executeTool(name, tool, input, context)
-                  const content =
-                    typeof executed.content === "string"
-                      ? [{ type: "text" as const, text: executed.content }]
-                      : (executed.content ?? [])
-                  const outputFileParts = outputFiles(content)
+                  const outputFileParts = outputFiles(resultContent(executed))
                   if (outputFileParts.length > 0)
                     yield* Ref.update(files, (items) => [...items, { index, files: outputFileParts }])
-                  if (executed.output !== undefined) return executed.output
-                  const text = content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n")
-                  return text === "" ? null : text
+                  return resultValue(executed)
                 }),
               hooks: progressHooks(record),
             }),
@@ -149,6 +143,47 @@ export const create = (
         }
       }),
   } satisfies Info
+}
+
+/**
+ * Runs one program over `inventory` alone, for work with no model step such as a schedule's check, and returns its
+ * raw result. It gets no `fetch`, so the inventory is all it can reach.
+ */
+export const check = (
+  inventory: Inventory,
+  code: string,
+  limits: CodeMode.ExecutionLimits,
+  executeTool: (name: string, tool: Info, input: unknown) => Effect.Effect<Result, Error>,
+) =>
+  CodeMode.make({ tools: inventoryTools(inventory), hooks: runHooks, limits })
+    .execute(code)
+    .pipe(
+      Effect.provideService(Run, {
+        executeTool: (name, tool, input) => executeTool(name, tool, input).pipe(Effect.map(resultValue)),
+        hooks: {},
+      }),
+    )
+
+/** The Code Mode path a tool is called by, e.g. `slack.slack_read_thread`. */
+export function qualifiedName(registration: Info) {
+  const normalized = normalizedName(registration)
+  if (registration.options?.namespace === undefined) return normalized
+  return `${registration.options.namespace}.${normalized}`
+}
+
+function resultContent(executed: Result) {
+  return typeof executed.content === "string"
+    ? [{ type: "text" as const, text: executed.content }]
+    : (executed.content ?? [])
+}
+
+// What a program sees from a tool call: its output, else its text content.
+function resultValue(executed: Result) {
+  if (executed.output !== undefined) return executed.output
+  const text = resultContent(executed)
+    .flatMap((part) => (part.type === "text" ? [part.text] : []))
+    .join("\n")
+  return text === "" ? null : text
 }
 
 // Rows appear in start order; the same call object arrives at both hooks, so a call finds its row again.
@@ -237,6 +272,16 @@ const runtimes = new WeakMap<Inventory, CodeMode.Runtime<Run>>()
 function runtime(inventory: Inventory) {
   const cached = runtimes.get(inventory)
   if (cached) return cached
+  const created = CodeMode.make({
+    tools: inventoryTools(inventory),
+    extensions: [CodeModeWeb.extension],
+    hooks: runHooks,
+  })
+  runtimes.set(inventory, created)
+  return created
+}
+
+function inventoryTools(inventory: Inventory) {
   // A path may carry namespace metadata, a callable tool, child tools, or all three.
   const root: ToolNode = { children: new Map() }
   for (const namespace of inventory.namespaces?.values() ?? []) getNode(root, namespace.name).namespace = namespace
@@ -249,14 +294,7 @@ function runtime(inventory: Inventory) {
       execute: (input) => Run.use((run) => run.executeTool(name, registration, input)),
     })
   }
-  const tools = renderTools(root)
-  const created = CodeMode.make<typeof tools, [typeof CodeModeWeb.extension]>({
-    tools,
-    extensions: [CodeModeWeb.extension],
-    hooks: runHooks,
-  })
-  runtimes.set(inventory, created)
-  return created
+  return renderTools(root)
 }
 
 const runHooks = {
@@ -318,12 +356,6 @@ function renderEntry(
 function flattenTools(node: ToolNode, path: ReadonlyArray<string>, tools: Tools) {
   if (node.tool !== undefined) tools[path.join(".")] = node.tool
   for (const [name, child] of node.children) flattenTools(child, [...path, name], tools)
-}
-
-function qualifiedName(registration: Info) {
-  const normalized = normalizedName(registration)
-  if (registration.options?.namespace === undefined) return normalized
-  return `${registration.options.namespace}.${normalized}`
 }
 
 // Tool inputs arrive as parsed JSON, so the JSON value cast is a boundary fact.

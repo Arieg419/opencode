@@ -3,6 +3,7 @@ export { CallID, Content, Error, FileContent, TextContent } from "@opencode/sche
 export type { Context, Metadata, Namespace, Options, Result } from "@opencode/schema/tool"
 
 import { ToolDefinition, type ToolCall } from "@opencode/ai/effect"
+import type { CodeMode } from "@opencode/codemode"
 import { Tool } from "@opencode/schema/tool"
 import { Context, Effect, Layer, Result, Schema, SchemaIssue, Types } from "effect"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
@@ -43,6 +44,21 @@ type Data = {
 export interface Interface extends State.Transformable<Editor> {
   readonly list: () => Effect.Effect<ReadonlyArray<Tool.Info & { readonly id: string }>>
   readonly snapshot: (permissions?: Permission.Ruleset) => Effect.Effect<Snapshot>
+  /**
+   * Runs a Code Mode program with no model step and nobody present to approve anything. It sees only the Code Mode
+   * tools named in `allow`; their own permissions are allowed without asking, any other ask is denied, and configured
+   * denies still win.
+   */
+  readonly check: (input: CheckInput) => Effect.Effect<CodeMode.Result>
+}
+
+export interface CheckInput {
+  readonly code: string
+  /** Code Mode paths, e.g. `slack.slack_read_thread`. */
+  readonly allow: ReadonlyArray<string>
+  readonly permissions: Permission.Ruleset
+  readonly limits: CodeMode.ExecutionLimits
+  readonly context: Tool.Context
 }
 
 /** A local execution result after hooks and content normalization. */
@@ -319,6 +335,38 @@ const layer = Layer.effect(
           }
         }),
       ),
+      check: Effect.fn("Tool.check")(function* (input) {
+        if (whollyDisabled("execute", input.permissions))
+          return {
+            ok: false,
+            error: { kind: "ExecutionFailure", message: "Code Mode is disabled for this agent" },
+            toolCalls: [],
+          } satisfies CodeMode.Result
+        const data = state.get()
+        const allow = new Set(input.allow)
+        const tools = new Map(
+          Array.from(data.tools).filter(
+            ([name, tool]) =>
+              tool.options?.codemode !== false &&
+              allow.has(CodeModeTool.qualifiedName(tool)) &&
+              !whollyDisabled(tool.options?.permission ?? name, input.permissions),
+          ),
+        )
+        const unattended = Array.from(tools, ([name, tool]) => ({
+          action: tool.options?.permission ?? name,
+          resource: "*",
+          effect: "allow" as const,
+        }))
+        return yield* CodeModeTool.check(
+          { tools, namespaces: data.namespaces },
+          input.code,
+          input.limits,
+          (name, tool, toolInput) =>
+            beforeExecute(name, toolInput, input.context).pipe(
+              Effect.flatMap((event) => executeTool(tool, name, event.input, input.context)),
+            ),
+        ).pipe(Effect.provideService(Permission.Unattended, unattended))
+      }),
     })
   }),
 )
