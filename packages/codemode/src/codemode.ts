@@ -11,6 +11,7 @@ export type {
   CallResult,
   ExtensionInvocation,
   Hooks,
+  InterruptedExecution,
   ToolCall,
   ToolDescription,
   ToolInvocation,

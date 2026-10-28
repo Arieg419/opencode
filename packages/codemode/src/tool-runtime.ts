@@ -52,7 +52,17 @@ export type CallResult =
   | { readonly status: "failure"; readonly error: unknown }
   | { readonly status: "interrupted" }
 
-/** Hooks around every call the program makes into the host. A failing `before` denies the call. */
+/** What an interrupted execution had produced, which it returns no `Result` to report. */
+export type InterruptedExecution = {
+  readonly logs: ReadonlyArray<string>
+  readonly toolCalls: ReadonlyArray<ToolCall>
+}
+
+/**
+ * Hooks around every call the program makes into the host. A failing `before` denies the call.
+ * `execution.interrupted` runs when the execution ends by interruption, after the calls it stopped ran their `after`
+ * hooks.
+ */
 export type Hooks<R = never> = {
   readonly "tool.before"?: ((call: ToolInvocation) => Effect.Effect<void, unknown, R>) | undefined
   readonly "tool.after"?: ((call: ToolInvocation, result: CallResult) => Effect.Effect<void, never, R>) | undefined
@@ -60,6 +70,7 @@ export type Hooks<R = never> = {
   readonly "extension.after"?:
     | ((call: ExtensionInvocation, result: CallResult) => Effect.Effect<void, never, R>)
     | undefined
+  readonly "execution.interrupted"?: ((execution: InterruptedExecution) => Effect.Effect<void, never, R>) | undefined
 }
 
 /** Runs `before`, then `run`, then `after` with how it ended, including when interrupted. */

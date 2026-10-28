@@ -1,5 +1,5 @@
 import { describe, expect, test } from "bun:test"
-import { Cause, Effect, Schema } from "effect"
+import { Cause, Deferred, Effect, Fiber, Schema } from "effect"
 import { CodeMode, Extension, Tool, toolError } from "../src/index.js"
 
 const run = (tool: Tool.Tool<never>) =>
@@ -172,6 +172,8 @@ describe("CodeMode call hooks", () => {
     "extension.before": (call) => Effect.sync(() => void events.push(`extension.before ${JSON.stringify(call)}`)),
     "extension.after": (call, result) =>
       Effect.sync(() => void events.push(`extension.after ${call.name} ${ended(result)}`)),
+    "execution.interrupted": (execution) =>
+      Effect.sync(() => void events.push(`execution.interrupted ${JSON.stringify(execution)}`)),
   })
 
   test("surround the tools actually invoked, with decoded input", async () => {
@@ -324,7 +326,47 @@ describe("CodeMode call hooks", () => {
     )
 
     expect(exit._tag).toBe("Failure")
-    expect(events).toEqual(['tool.before {"name":"host.call","input":{}}', "tool.after host.call interrupted"])
+    expect(events).toEqual([
+      'tool.before {"name":"host.call","input":{}}',
+      "tool.after host.call interrupted",
+      'execution.interrupted {"logs":[],"toolCalls":[{"name":"host.call"}]}',
+    ])
+  })
+
+  test("hand an execution interrupted from outside its logs and calls, after the calls it stopped settle", async () => {
+    const events: Array<string> = []
+    const started = Deferred.makeUnsafe<void>()
+    const lookup = Tool.make({
+      description: "Look up",
+      input: Schema.Struct({}),
+      output: Schema.String,
+      execute: () => Effect.succeed("found"),
+    })
+    const wait = Tool.make({
+      description: "Wait",
+      input: Schema.Struct({}),
+      output: Schema.String,
+      execute: () => Deferred.succeed(started, undefined).pipe(Effect.andThen(Effect.never)),
+    })
+    const runtime = CodeMode.make({ tools: { lookup, wait }, hooks: observe(events) })
+
+    await Effect.runPromise(
+      Effect.gen(function* () {
+        const execution = yield* runtime
+          .execute('console.log("starting"); await tools.lookup({}); await tools.wait({})')
+          .pipe(Effect.forkChild)
+        yield* Deferred.await(started)
+        yield* Fiber.interrupt(execution)
+      }),
+    )
+
+    expect(events).toEqual([
+      'tool.before {"name":"lookup","input":{}}',
+      "tool.after lookup success",
+      'tool.before {"name":"wait","input":{}}',
+      "tool.after wait interrupted",
+      'execution.interrupted {"logs":["starting"],"toolCalls":[{"name":"lookup"},{"name":"wait"}]}',
+    ])
   })
 
   test("observes running calls interrupted during completion", async () => {

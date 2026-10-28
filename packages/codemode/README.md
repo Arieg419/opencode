@@ -92,7 +92,8 @@ The Effect environment is inferred from the supplied tools. `hooks` surround eve
 host: `tool.before`/`tool.after` receive `{ name, input }` with decoded input, `extension.before`/`extension.after`
 receive `{ extension, name, args }`. An `after` hook also receives how the call ended (`success` with its value,
 `failure` with its error, or `interrupted`). A failing `before` hook denies the call, and the program catches the
-failure as a thrown error.
+failure as a thrown error. An interrupted execution returns no result, so `execution.interrupted` receives
+`{ logs, toolCalls }` collected so far, after the calls it stopped ran their `after` hooks.
 
 ### `Extension.make`
 

@@ -106,6 +106,10 @@ export const executeProgram = <R>(
       Effect.map((result) =>
         limits.maxOutputBytes === undefined ? result : boundOutput(result, limits.maxOutputBytes),
       ),
+      // Runs after `base` has interrupted the calls still running, so their `after` hooks have settled.
+      Effect.onInterrupt(
+        () => hooks["execution.interrupted"]?.({ logs: [...logs], toolCalls: [...tools.calls] }) ?? Effect.void,
+      ),
     )
   })
 }

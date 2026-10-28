@@ -37,6 +37,7 @@ import { ShellSelect } from "@opencode/core/shell/select"
 import { ID } from "@opencode/schema/shell"
 import { ShellTool } from "@opencode/core/tool/plugin/shell"
 import { ToolOutput } from "@opencode/core/tool-output"
+import { ToolPartial } from "@opencode/core/tool/partial"
 import { Tool } from "@opencode/core/tool"
 import { tmpdir, tmpdirScoped } from "./fixture/tmpdir"
 import { tempGlobalLayer } from "./fixture/global"
@@ -202,6 +203,12 @@ const progressOverflowCommand = (bytes: number, release: string) =>
   isWindows
     ? `[Console]::Out.Write(('x' * ${bytes})); while (!(Test-Path -LiteralPath '${release}')) { Start-Sleep -Milliseconds 50 }`
     : `head -c ${bytes} /dev/zero | tr '\\0' 'x'; while [ ! -e '${release}' ]; do sleep 0.05; done`
+
+// Prints numbered lines, then waits for a release file the test never writes, so it is still running when interrupted.
+const gatedOutputCommand = (lines: number) =>
+  isWindows
+    ? `[Console]::Out.Write('output-start' + [Environment]::NewLine + ((1..${lines}) -join [Environment]::NewLine) + [Environment]::NewLine + 'output-end' + [Environment]::NewLine); while (!(Test-Path -LiteralPath 'release')) { Start-Sleep -Milliseconds 50 }`
+    : `printf 'output-start\\n'; seq 1 ${lines}; printf 'output-end\\n'; while [ ! -e release ]; do sleep 0.05; done`
 
 const withSession = <A, E, R>(directory: string, body: (registry: Tool.Interface) => Effect.Effect<A, E, R>) =>
   Effect.gen(function* () {
@@ -1810,6 +1817,65 @@ describe("ShellTool", () => {
       ),
     )
   }
+
+  // Interrupts the call once the command's output reaches its file, returning what the call recorded.
+  const interruptAfterOutput = (registry: Tool.Interface, command: string) =>
+    Effect.gen(function* () {
+      const shell = yield* Shell.Service
+      const recorded: Array<ReadonlyArray<Tool.Content>> = []
+      const started = yield* Deferred.make<ID>()
+      const run = yield* executeTool(registry, {
+        ...call({ command }, "call-interrupted"),
+        progress: (update) =>
+          typeof update.shellID === "string"
+            ? Deferred.succeed(started, ID.make(update.shellID)).pipe(Effect.asVoid)
+            : Effect.void,
+      }).pipe(
+        ToolPartial.provide((content) => void recorded.push(content)),
+        Effect.forkChild({ startImmediately: true }),
+      )
+      const id = yield* Deferred.await(started)
+      const deadline = Date.now() + 10_000
+      while (!(yield* shell.output(id, { limit: Number.MAX_SAFE_INTEGER })).output.includes("output-end")) {
+        if (Date.now() > deadline) return yield* Effect.die(new Error("Timed out waiting for shell output"))
+        yield* Effect.promise(() => Bun.sleep(5))
+      }
+      yield* Fiber.interrupt(run)
+      // The command is still killed and its output file removed.
+      expect(yield* shell.get(id).pipe(Effect.flip)).toBeInstanceOf(Shell.NotFoundError)
+      return recorded
+    })
+
+  it.live("records a foreground command's output when it is interrupted", () =>
+    Effect.gen(function* () {
+      reset()
+      const tmp = yield* tmpdirScoped()
+      const recorded = yield* withSession(tmp.path, (registry) => interruptAfterOutput(registry, gatedOutputCommand(2)))
+
+      expect(recorded).toHaveLength(1)
+      expect(recorded[0]?.map((part) => (part.type === "text" ? part.text.replaceAll("\r\n", "\n") : part))).toEqual([
+        "output-start\n1\n2\noutput-end\n",
+        "Interrupted before completion",
+      ])
+    }),
+  )
+
+  it.live("keeps the tail of a large interrupted output within the partial content limit", () =>
+    Effect.gen(function* () {
+      reset()
+      const tmp = yield* tmpdirScoped()
+      const recorded = yield* withSession(tmp.path, (registry) =>
+        interruptAfterOutput(registry, gatedOutputCommand(20_000)),
+      )
+
+      const output = recorded[0]?.[0]
+      if (output?.type !== "text") throw new Error("Expected text content")
+      expect(Buffer.byteLength(output.text)).toBeLessThanOrEqual(ToolPartial.MAX_BYTES + 100)
+      expect(output.text).not.toContain("output-start")
+      expect(output.text).toMatch(/\n19999\r?\n20000\r?\noutput-end\r?\n\n\n\[showing the last \d+ of \d+ bytes\]$/)
+      expect(recorded[0]?.[1]).toEqual({ type: "text", text: "Interrupted before completion" })
+    }),
+  )
 
   it.live("backgrounds a foreground command when the session is signaled", () =>
     Effect.acquireUseRelease(

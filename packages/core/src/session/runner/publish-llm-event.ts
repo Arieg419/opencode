@@ -102,6 +102,8 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
     settled: boolean
     providerExecuted: boolean
     progress?: Tool.Metadata
+    /** What the running call has produced so far, sent with its failure. */
+    partial?: NonEmptyContent
     input?: InputExcerpt
     malformed?: boolean
   }
@@ -379,6 +381,7 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
         tool.name === "subagent" && error.type === "aborted" && typeof tool.progress?.sessionID === "string"
           ? { ...error, message: `${error.message} (sessionID: ${tool.progress.sessionID})` }
           : error,
+      ...(tool.partial === undefined ? {} : { content: tool.partial }),
       ...failureSnapshot(tool, metadata),
       executed: tool.providerExecuted,
     })
@@ -604,6 +607,13 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
     })
   })
 
+  /** Keeps what a running local call has produced so far; nothing is published until the call fails. */
+  const partial = (id: string, content: ReadonlyArray<Tool.Content>) => {
+    const tool = tools.get(id)
+    if (!tool || tool.settled) return
+    tool.partial = isReadonlyArrayNonEmpty(content) ? content : undefined
+  }
+
   /** Publishes one canonical terminal event for a locally executed tool call. */
   const toolExecution = Effect.fnUntraced(function* (id: string, name: string, result: Tool.NormalizedResult) {
     const tool = tools.get(id)
@@ -631,6 +641,7 @@ export const createLLMEventPublisher = (bus: Pick<Bus.Interface, "publish">, inp
       return publishTraced(event)
     },
     progress,
+    partial,
     toolExecution,
     flush,
     failAssistant,

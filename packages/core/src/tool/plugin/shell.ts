@@ -19,6 +19,7 @@ import { shellParserWasm } from "#shell-parser-wasm"
 import { ShellParse } from "../../shell/parse.js"
 import { ShellSelect } from "../../shell/select.js"
 import { ShellResult } from "../../shell/result.js"
+import { ToolPartial } from "../partial.js"
 
 export const name = "shell"
 export const DEFAULT_TIMEOUT_MS = 2 * 60 * 1_000
@@ -257,9 +258,23 @@ export const Plugin = {
                 return backgroundResult(info.id, info.file)
               }
 
+              // Cancelling removes the output file, so an interrupt records what the command printed first.
+              const recordOutput = Effect.gen(function* () {
+                const size = (yield* shell.output(info.id, { cursor: Number.MAX_SAFE_INTEGER })).size
+                const start = Math.max(0, size - ToolPartial.MAX_BYTES)
+                const page = (yield* shell.output(info.id, { cursor: start, limit: ToolPartial.MAX_BYTES })).output
+                // A window that starts inside the output drops its cut first line, unless that is all it holds.
+                const cut = start > 0 ? page.indexOf("\n") + 1 : 0
+                const text = cut > 0 && cut < page.length ? page.slice(cut) : page
+                const notice = start > 0 ? `\n\n[showing the last ${Buffer.byteLength(text)} of ${size} bytes]` : ""
+                yield* ToolPartial.record([
+                  { type: "text", text: `${text || "(no output)"}${notice}` },
+                  { type: "text", text: "Interrupted before completion" },
+                ])
+              }).pipe(Effect.ignore)
               const result = yield* jobs
                 .block({ id: job.id, sessionID: context.sessionID })
-                .pipe(Effect.onInterrupt(() => jobs.cancel(job.id).pipe(Effect.ignore)))
+                .pipe(Effect.onInterrupt(() => recordOutput.pipe(Effect.andThen(jobs.cancel(job.id)), Effect.ignore)))
               if (result?.type === "backgrounded") {
                 yield* shell.timeout(info.id, 0)
                 yield* notifyWhenDone(context.sessionID, job.id, info.id, info.command, settled)

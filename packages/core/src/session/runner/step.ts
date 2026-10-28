@@ -17,6 +17,7 @@ import { Permission } from "../../permission.js"
 import { Snapshot } from "../../snapshot.js"
 import { Tool } from "../../tool.js"
 import { ToolOutput } from "../../tool-output.js"
+import { ToolPartial } from "../../tool/partial.js"
 import { QuestionTool } from "../../tool/plugin/question.js"
 import { StepFailedError } from "../error.js"
 import { SessionEvent } from "../event.js"
@@ -91,13 +92,15 @@ export const make = Effect.gen(function* () {
     const executeTool = (call: ToolCall) => {
       if (input.prepared.request.toolChoice?.type === "none")
         return new Tool.Error({ message: "Tools are disabled after the maximum agent steps" })
-      return input.prepared.executeTool({
-        sessionID: input.sessionID,
-        agent: input.agent,
-        messageID: input.assistantMessageID,
-        call,
-        progress: (update) => publisher.progress(call.id, update),
-      })
+      return input.prepared
+        .executeTool({
+          sessionID: input.sessionID,
+          agent: input.agent,
+          messageID: input.assistantMessageID,
+          call,
+          progress: (update) => publisher.progress(call.id, update),
+        })
+        .pipe(ToolPartial.provide((content) => publisher.partial(call.id, content)))
     }
 
     // Provider and tool fibers retain per-source order without a shared writer queue.

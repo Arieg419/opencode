@@ -1,12 +1,13 @@
 import { expect, test } from "bun:test"
 import { CodeModeTool } from "@opencode/core/codemode/tool"
 import { Tool } from "@opencode/core/tool"
+import { ToolPartial } from "@opencode/core/tool/partial"
 import { execute } from "@opencode/core/tool/runtime"
 import { Agent } from "@opencode/schema/agent"
 import { Session } from "@opencode/schema/session"
 import { SessionMessage } from "@opencode/schema/session-message"
-import type { Info } from "@opencode/schema/tool"
-import { Effect, Schema } from "effect"
+import type { Content, Info } from "@opencode/schema/tool"
+import { Deferred, Effect, Fiber, Schema } from "effect"
 
 const context = {
   sessionID: Session.ID.make("ses_execute"),
@@ -153,6 +154,50 @@ test("execute supports callable namespace tools", async () => {
     ],
   })
   expect(result.content).toEqual([{ type: "text", text: '[\n  "admin",\n  "created"\n]' }])
+})
+
+// Runs `code` until it blocks in `tools.wait`, interrupts it, and returns the text it recorded.
+const interruptedText = async (code: string) => {
+  const waiting = Deferred.makeUnsafe<void>()
+  const wait: Info = {
+    name: "wait",
+    description: "Wait until interrupted",
+    input: Schema.Struct({}),
+    output: Schema.String,
+    execute: () => Deferred.succeed(waiting, undefined).pipe(Effect.andThen(Effect.never)),
+  }
+  const recorded: Array<ReadonlyArray<Content>> = []
+  await Effect.runPromise(
+    Effect.gen(function* () {
+      const run = yield* createCodeMode(new Map([["wait", wait]]))
+        .execute({ code }, context)
+        .pipe(
+          ToolPartial.provide((content) => void recorded.push(content)),
+          Effect.forkChild({ startImmediately: true }),
+        )
+      yield* Deferred.await(waiting)
+      yield* Fiber.interrupt(run)
+    }),
+  )
+  expect(recorded).toHaveLength(1)
+  const content = recorded[0]?.[0]
+  if (content?.type !== "text") throw new Error("Expected text content")
+  expect(Buffer.byteLength(content.text)).toBeLessThanOrEqual(ToolPartial.MAX_BYTES + 100)
+  return content.text
+}
+
+test("an interrupted execute records its calls and newest logs within the partial content limit", async () => {
+  const text = await interruptedText(
+    'for (let i = 0; i < 2000; i++) console.log(`line ${i} ${"x".repeat(100)}`); await tools.wait({})',
+  )
+  expect(text).toStartWith("Tool calls:\n- wait: interrupted\n\nLogs:\n[showing the last ")
+  expect(text).toEndWith(`\nline 1999 ${"x".repeat(100)}`)
+})
+
+test("an interrupted execute keeps the start of a log line too long for the limit", async () => {
+  const text = await interruptedText('console.log("start " + "x".repeat(40000)); await tools.wait({})')
+  expect(text).toStartWith("Tool calls:\n- wait: interrupted\n\nLogs:\nstart xxx")
+  expect(text).toEndWith("x [line truncated]")
 })
 
 test("executions share the prepared runtime of an inventory while keeping per-call state", async () => {

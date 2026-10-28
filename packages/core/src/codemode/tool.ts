@@ -11,6 +11,7 @@ import type {
   Result,
 } from "@opencode/schema/tool"
 import { Context, Effect, Ref, Schema, Semaphore } from "effect"
+import { ToolPartial } from "../tool/partial.js"
 import { definition, normalizedName } from "../tool/runtime.js"
 import { CodeModeCatalog } from "./catalog.js"
 import { CodeModeWeb } from "./web.js"
@@ -91,6 +92,8 @@ export const create = (
         const callIndex = yield* Ref.make(0)
         const files = yield* Ref.make<Array<CollectedFiles>>([])
         const calls = yield* Ref.make<Array<ExecuteCall>>([])
+        // Rows of interrupted calls; their status shows as an error in the UI.
+        const interrupted = new Set<number>()
         const lock = Semaphore.makeUnsafe(1)
         const record = (update: (items: Array<ExecuteCall>) => Array<ExecuteCall>) =>
           lock.withPermit(
@@ -103,7 +106,7 @@ export const create = (
               executeTool: (name, tool, input) =>
                 Effect.gen(function* () {
                   const index = yield* Ref.getAndUpdate(callIndex, (index) => index + 1)
-                  const executed = yield* executeTool(name, tool, input, context)
+                  const executed = yield* executeTool(name, tool, input, context).pipe(ToolPartial.isolate)
                   const content =
                     typeof executed.content === "string"
                       ? [{ type: "text" as const, text: executed.content }]
@@ -115,7 +118,15 @@ export const create = (
                   const text = content.flatMap((part) => (part.type === "text" ? [part.text] : [])).join("\n")
                   return text === "" ? null : text
                 }),
-              hooks: progressHooks(record),
+              hooks: {
+                ...progressHooks(record, interrupted),
+                "execution.interrupted": (execution) =>
+                  Ref.get(calls).pipe(
+                    Effect.flatMap((toolCalls) =>
+                      ToolPartial.record(partialContent(toolCalls, interrupted, execution.logs)),
+                    ),
+                  ),
+              },
             }),
           )
         const toolCalls = yield* Ref.get(calls)
@@ -152,7 +163,10 @@ export const create = (
 }
 
 // Rows appear in start order; the same call object arrives at both hooks, so a call finds its row again.
-function progressHooks(record: (update: (items: Array<ExecuteCall>) => Array<ExecuteCall>) => Effect.Effect<unknown>) {
+function progressHooks(
+  record: (update: (items: Array<ExecuteCall>) => Array<ExecuteCall>) => Effect.Effect<unknown>,
+  interrupted: Set<number>,
+) {
   const rows = new WeakMap<object, number>()
   const start = (call: object, entry: ExecuteCall) =>
     record((items) => {
@@ -162,6 +176,7 @@ function progressHooks(record: (update: (items: Array<ExecuteCall>) => Array<Exe
   const settle = (call: object, result: CodeMode.CallResult) => {
     const index = rows.get(call)
     if (index === undefined) return Effect.void
+    if (result.status === "interrupted") interrupted.add(index)
     return record((items) => {
       const next = [...items]
       next[index] = { ...items[index], status: result.status === "success" ? "completed" : "error" }
@@ -260,6 +275,8 @@ const runHooks = {
   "tool.after": (call, result) => Run.use((run) => run.hooks["tool.after"]?.(call, result) ?? Effect.void),
   "extension.before": (call) => Run.use((run) => run.hooks["extension.before"]?.(call) ?? Effect.void),
   "extension.after": (call, result) => Run.use((run) => run.hooks["extension.after"]?.(call, result) ?? Effect.void),
+  "execution.interrupted": (execution) =>
+    Run.use((run) => run.hooks["execution.interrupted"]?.(execution) ?? Effect.void),
 } satisfies CodeMode.Hooks<Run>
 
 function getNode<T>(root: Node<T>, path: string) {
@@ -342,6 +359,47 @@ function formatResult(result: CodeMode.Result) {
       : undefined
   const logs = result.logs && result.logs.length > 0 ? `Logs:\n${result.logs.join("\n")}` : undefined
   return [output, warnings, logs].filter((part) => part !== undefined && part !== "").join("\n\n")
+}
+
+// An interrupted program returns no result, so the model gets the calls it made and what it logged, but not what the
+// calls returned.
+function partialContent(
+  calls: ReadonlyArray<ExecuteCall>,
+  interrupted: ReadonlySet<number>,
+  logs: ReadonlyArray<string>,
+): Array<Content> {
+  const rows = calls.map((call, index) => `- ${call.tool}: ${interrupted.has(index) ? "interrupted" : call.status}`)
+  const shownRows = lastLines(rows, ToolPartial.MAX_BYTES / 2)
+  const shownLogs = lastLines(
+    logs,
+    ToolPartial.MAX_BYTES - shownRows.reduce((total, row) => total + Buffer.byteLength(row) + 1, 0),
+  )
+  const section = (title: string, all: ReadonlyArray<string>, shown: ReadonlyArray<string>, unit: string) => {
+    if (all.length === 0) return []
+    const notice = shown.length < all.length ? [`[showing the last ${shown.length} of ${all.length} ${unit}]`] : []
+    return [`${title}:\n${[...notice, ...shown].join("\n")}`]
+  }
+  const text = [...section("Tool calls", rows, shownRows, "calls"), ...section("Logs", logs, shownLogs, "lines")]
+  return text.length === 0 ? [] : [{ type: "text", text: text.join("\n\n") }]
+}
+
+// The newest lines that fit in `budget` UTF-8 bytes.
+function lastLines(lines: ReadonlyArray<string>, budget: number) {
+  let start = lines.length
+  let bytes = 0
+  while (start > 0) {
+    bytes += Buffer.byteLength(lines[start - 1]) + 1
+    if (bytes > budget) break
+    start--
+  }
+  const newest = lines.at(-1)
+  if (start < lines.length || newest === undefined) return lines.slice(start)
+  // The newest line alone is over budget; keep its start, dropping a character the cut split.
+  const head = Buffer.from(newest)
+    .subarray(0, budget)
+    .toString()
+    .replace(/\uFFFD$/, "")
+  return [`${head} [line truncated]`]
 }
 
 function formatValue(value: CodeMode.DataValue) {
