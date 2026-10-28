@@ -91,6 +91,7 @@ test("legacy Linux launcher stays hidden", async () => {
 test.each(channels)("macOS icon format for $channel", ({ channel }) => {
   const config = load(channel)
   expect(config.mac?.icon).toBe(channel === "prod" ? "resources/icons/icon.icon" : "resources/icons/icon.icns")
+  expect(config.dmg?.icon).toBe(channel === "prod" ? "resources/icons/icon.icns" : undefined)
   // The prod override must keep the rest of the shared macOS settings.
   expect(config.mac?.target).toEqual(["dmg", "zip"])
   expect(config.mac?.extendInfo?.NSMicrophoneUsageDescription).toBeTruthy()
