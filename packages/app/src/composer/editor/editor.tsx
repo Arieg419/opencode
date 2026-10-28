@@ -422,6 +422,7 @@ export function ComposerEditor(props: ComposerEditorProps) {
               <Show when={view.agent} keyed>
                 {(control) => (
                   <ComposerEditorConfiguredSelect
+                    fitMenuToOptions
                     title={i18n.t("ui.promptInput.chooseAgent")}
                     keybind={["Mod", "."]}
                     control={control}
@@ -987,6 +988,7 @@ function pointerFocusReturn() {
 
 function ComposerEditorConfiguredSelect(props: {
   mobileDrawer?: boolean
+  fitMenuToOptions?: boolean
   title: string
   keybind?: string[]
   control: ComposerSelectControl
@@ -999,6 +1001,7 @@ function ComposerEditorConfiguredSelect(props: {
   return (
     <ComposerEditorSelect
       mobileDrawer={props.mobileDrawer}
+      fitMenuToOptions={props.fitMenuToOptions}
       title={props.title}
       class={props.class}
       keybind={props.control.keybind?.() ?? props.keybind}
@@ -1016,6 +1019,8 @@ function ComposerEditorConfiguredSelect(props: {
 
 function ComposerEditorSelect(props: {
   mobileDrawer?: boolean
+  /** Size the menu to its longest option instead of the shared 160px minimum, with room before the check. */
+  fitMenuToOptions?: boolean
   title: string
   keybind?: string[]
   options: ComposerOption[]
@@ -1079,11 +1084,18 @@ function ComposerEditorSelect(props: {
               {content()}
             </Menu.Trigger>
             <Menu.Portal>
-              <Menu.Content onCloseAutoFocus={focus.onCloseAutoFocus}>
+              <Menu.Content
+                onCloseAutoFocus={focus.onCloseAutoFocus}
+                class={props.fitMenuToOptions ? "!min-w-0" : undefined}
+              >
                 <Menu.RadioGroup value={props.current} onChange={props.onSelect}>
                   <For each={props.options}>
                     {(option) => (
-                      <Menu.RadioItem value={option.id} class="capitalize" closeOnSelect>
+                      <Menu.RadioItem
+                        value={option.id}
+                        class={props.fitMenuToOptions ? "capitalize !gap-6" : "capitalize"}
+                        closeOnSelect
+                      >
                         {option.label}
                       </Menu.RadioItem>
                     )}
