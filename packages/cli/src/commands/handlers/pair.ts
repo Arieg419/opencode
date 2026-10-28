@@ -3,6 +3,7 @@ import { EOL } from "os"
 import { Effect, Option, Schedule } from "effect"
 import { Service } from "@opencode/client/effect/service"
 import { OpenCode } from "@opencode/client/promise"
+import { pairPageLink, reachableURLs } from "@opencode/util/pairing-link"
 import { renderUnicodeCompact } from "@opencode/util/qr"
 import { Commands } from "../commands"
 import { Runtime } from "../../framework/runtime"
@@ -29,8 +30,7 @@ export default Runtime.handler(
     const urls = yield* pairingURLs(client, input)
     const pairing = yield* Effect.tryPromise(() => client.server.pair())
     const links = urls.map((url) => new URL(`/auth/connect/${pairing.code}`, url).href)
-    // Loopback URLs are useless to the scanning device, so the QR code only carries reachable addresses.
-    const remote = urls.filter((url) => !isLoopback(new URL(url).hostname))
+    const remote = reachableURLs(urls)
     process.stdout.write(
       [
         "",
@@ -41,9 +41,7 @@ export default Runtime.handler(
           ? [
               "",
               // renderUnicodeCompact separates rows with "\n" on every platform, so splitting on EOL ("\r\n" on Windows) indents only the first row.
-              renderUnicodeCompact(JSON.stringify({ code: pairing.code, urls: remote }), {
-                border: 2,
-              })
+              renderUnicodeCompact(pairPageLink({ code: pairing.code, urls: remote }), { border: 2 })
                 .split("\n")
                 .map((line) => "  " + line)
                 .join(EOL),
@@ -151,9 +149,3 @@ const remoteURL = Effect.fnUntraced(function* (client: ReturnType<typeof OpenCod
     }),
   )
 })
-
-function isLoopback(hostname: string) {
-  return (
-    hostname === "localhost" || hostname.endsWith(".localhost") || hostname.startsWith("127.") || hostname === "[::1]"
-  )
-}
