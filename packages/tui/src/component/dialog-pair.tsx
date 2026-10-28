@@ -1,7 +1,7 @@
 import { TextAttributes } from "@opentui/core"
 import { useTerminalDimensions } from "@opentui/solid"
 import { createMemo, createResource, createSignal, For, Show } from "solid-js"
-import { pairPageLink, reachableURLs } from "@opencode/util/pairing-link"
+import { pairingQRLink, reachableURLs } from "@opencode/util/pairing-link"
 import { renderUnicodeCompact } from "@opencode/util/qr"
 import { useClient } from "../context/client"
 import { useTheme } from "../context/theme"
@@ -27,14 +27,13 @@ export function DialogPair() {
         if (local) local.hostname = "localhost"
         // The QR code carries only addresses the scanning device can reach, including the remote access tunnel
         // when it is on, so the phone also pairs away from this network.
-        const reachable = reachableURLs(server.urls)
+        const qr = pairingQRLink(pairing.code, server.urls)
         return {
           links: server.urls.map(link),
           localhost: local ? link(local.href) : undefined,
           minutes: Math.round(pairing.expires_in / 60),
-          qr: reachable.length
-            ? renderUnicodeCompact(pairPageLink({ code: pairing.code, urls: reachable }), { border: 1 })
-            : undefined,
+          reachable: reachableURLs(server.urls).length > 0,
+          qr: qr === undefined ? undefined : renderUnicodeCompact(qr, { border: 1 }),
         }
       })
       .catch((error) => {
@@ -76,10 +75,15 @@ export function DialogPair() {
               )}
             </For>
           </box>
-          <Show when={!value.qr}>
+          <Show when={!value.reachable}>
             <text fg={theme.text.muted} wrapMode="word">
               Run `opencode service set hostname 0.0.0.0` to pair on this network, or `opencode pair --remote` to pair
               from anywhere.
+            </text>
+          </Show>
+          <Show when={value.reachable && !value.qr}>
+            <text fg={theme.text.muted} wrapMode="word">
+              The addresses are too long for a QR code; open a link instead.
             </text>
           </Show>
         </box>
@@ -114,19 +118,14 @@ export function DialogPair() {
         when={loadError()}
         fallback={
           <Show when={info()} fallback={<text fg={theme.text.muted}>Loading server information…</text>}>
-            <Show
-              when={dimensions().height >= 36}
-              fallback={
-                <scrollbox
-                  height={Math.max(8, dimensions().height - Math.floor(dimensions().height / 4) - 6)}
-                  scrollbarOptions={{ visible: false }}
-                >
-                  {content()}
-                </scrollbox>
-              }
+            {/* The QR code can be taller than the terminal, beside the links or under them, so the body scrolls. */}
+            <scrollbox
+              id="pair-body"
+              maxHeight={Math.max(8, dimensions().height - 6)}
+              scrollbarOptions={{ visible: false }}
             >
               {content()}
-            </Show>
+            </scrollbox>
           </Show>
         }
       >
