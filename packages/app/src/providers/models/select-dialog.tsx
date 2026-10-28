@@ -824,8 +824,11 @@ export function DialogSelectModel(props: { provider?: string; model?: ModelState
           <Badge class="shrink-0">{language.t("model.tag.latest")}</Badge>
         </Show>
         <Show when={usage(item())}>{(value) => <ModelUsageTag usage={value()} />}</Show>
-        {/* The slot keeps its width while hidden, so hovering a row never shifts it. The selected row shows only an explicit variant. */}
-        <Show when={variantsOf(item()).length > 0}>
+        {/*
+         * The slot keeps its width while hidden, so hovering a row never shifts it, and rows without variants reserve it
+         * too, so tags line up down the list. The selected row shows only an explicit variant.
+         */}
+        <Show when={variantsOf(item()).length > 0} fallback={<span aria-hidden="true" class="w-[72px] shrink-0" />}>
           <span
             data-slot="model-dialog-variant"
             data-default={variant(item()) ? undefined : ""}

@@ -38,7 +38,7 @@ const chatgpt = {
   latest: true,
 } satisfies NonNullable<ReturnType<ModelSelection["current"]>>
 
-const models = [
+const defaultModels = [
   chatgpt,
   {
     ...chatgpt,
@@ -49,7 +49,35 @@ const models = [
   },
 ]
 
-function SelectorStory(props: { favorite?: boolean }) {
+const opencode = { ...chatgpt.provider, id: "opencode", name: "OpenCode" }
+
+// Free models side by side, only one with variants, so their tags must still line up.
+const free = [
+  {
+    ...chatgpt,
+    id: "beam-free",
+    providerID: "opencode",
+    api: { ...chatgpt.api, id: "beam-free" },
+    name: "Beam Free",
+    family: "beam",
+    variants: { low: {}, high: {} },
+    provider: opencode,
+    latest: false,
+  },
+  {
+    ...chatgpt,
+    id: "big-pickle",
+    providerID: "opencode",
+    api: { ...chatgpt.api, id: "big-pickle" },
+    name: "Big Pickle",
+    family: "pickle",
+    provider: opencode,
+    latest: false,
+  },
+]
+
+function SelectorStory(props: { favorite?: boolean; models?: NonNullable<ReturnType<ModelSelection["current"]>>[] }) {
+  const models = props.models ?? defaultModels
   const dialog = useDialog()
 
   const [store, setStore] = createStore<{ current: string; favorite: string[]; variant?: string }>({
@@ -61,7 +89,7 @@ function SelectorStory(props: { favorite?: boolean }) {
 
   const selection = {
     ready: Object.assign(() => true, { promise: undefined }),
-    key: () => ({ providerID: "openai", modelID: store.current }),
+    key: () => ({ providerID: find(store.current)?.providerID ?? "openai", modelID: store.current }),
     current: () => find(store.current),
     recent: () => [find(store.current)].filter((model) => !!model),
     favorite: {
@@ -107,3 +135,5 @@ export default {
 export const Dialog = { render: () => <SelectorStory /> }
 
 export const Favorites = { render: () => <SelectorStory favorite /> }
+
+export const Free = { render: () => <SelectorStory models={free} /> }
