@@ -12,7 +12,9 @@ import type {
 } from "@opencode/schema/tool"
 import { Clock, Context, Effect, Ref, Schema, Semaphore } from "effect"
 import { definition, normalizedName } from "../tool/runtime.js"
+import { Permission } from "../permission.js"
 import { CodeModeCatalog } from "./catalog.js"
+import { CodeModeExecution } from "./execution.js"
 import { CodeModeWeb } from "./web.js"
 
 const ExecuteFile = Schema.Struct({
@@ -80,6 +82,7 @@ const description = [
 export const create = (
   inventory: Inventory,
   executeTool: (name: string, tool: Info, input: unknown, context: ToolContext) => Effect.Effect<Result, Error>,
+  permission: Permission.Interface,
 ) => {
   return {
     name: "execute",
@@ -133,6 +136,8 @@ export const create = (
             Effect.onError(() =>
               lock.withPermit(Ref.get(trailing).pipe(Effect.flatMap((pending) => (pending ? publish : Effect.void)))),
             ),
+            Effect.provideService(CodeModeExecution.Service, context),
+            Effect.provideService(Permission.Service, permission),
           )
         const toolCalls = yield* Ref.get(calls)
         const collected = (yield* Ref.get(files))
@@ -248,7 +253,7 @@ function renderCatalog(root: CatalogNode): ReadonlyArray<CodeModeCatalog.Tool | 
 
 // Inventories are immutable snapshots, so tool definitions, schemas, and the search index are built
 // once per inventory and shared by its catalog and every execution.
-const runtimes = new WeakMap<Inventory, CodeMode.Runtime<Run>>()
+const runtimes = new WeakMap<Inventory, CodeMode.Runtime<Run | CodeModeExecution.Service | Permission.Service>>()
 
 function runtime(inventory: Inventory) {
   const cached = runtimes.get(inventory)

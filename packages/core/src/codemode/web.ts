@@ -2,6 +2,9 @@ export * as CodeModeWeb from "./web.js"
 
 import { Extension } from "@opencode/codemode"
 import { isRecord } from "@opencode/util/record"
+import { Effect } from "effect"
+import { Permission } from "../permission.js"
+import { CodeModeExecution } from "./execution.js"
 
 const TIMEOUT_MS = 30_000
 
@@ -11,9 +14,27 @@ type Init = {
   readonly body?: string | Uint8Array<ArrayBuffer> | URLSearchParams
 }
 
-const fetch = async (input: string | URL, init: Init = {}) => {
-  if (URL.parse(String(input))?.protocol === "file:")
-    throw new Error("fetch cannot be used for filesystem access.")
+const fetch = (input: string | URL, init: Init = {}) =>
+  Effect.gen(function* () {
+    const url = String(input)
+    if (URL.parse(url)?.protocol === "file:")
+      return yield* Effect.fail(new Error("fetch cannot be used for filesystem access."))
+    const execution = yield* CodeModeExecution.Service
+    const permission = yield* Permission.Service
+    // The same rules as the webfetch tool, so a URL denied there is denied here.
+    yield* permission.assert({
+      action: "webfetch",
+      resources: [url],
+      save: ["*"],
+      metadata: display([input, init]),
+      sessionID: execution.sessionID,
+      agent: execution.agent,
+      source: { type: "tool", messageID: execution.messageID, id: execution.id },
+    })
+    return yield* Effect.tryPromise({ try: () => send(input, init), catch: (error) => error })
+  })
+
+const send = async (input: string | URL, init: Init) => {
   const response = await globalThis.fetch(input, {
     method: init.method,
     headers: init.headers,
