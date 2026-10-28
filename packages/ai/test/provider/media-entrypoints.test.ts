@@ -251,6 +251,7 @@ const decisions: ReadonlyArray<Case<DecisionModel>> = [
     },
     url: "https://inference.do-ai.run/v1/systemone",
     auth: ["authorization", "Bearer do-key"],
+    headers: { "typesafe-danger-zone-images": null },
     provider: "digitalocean",
   },
   {

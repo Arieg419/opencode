@@ -55,8 +55,7 @@ export const configure = (input: Config = {}) => {
     providerMetadataKey: "digitalocean",
     endpoint: { baseURL: endpoint ?? baseURL },
     auth,
-    // DigitalOcean serves TypeSafe's Jev, which needs this header for images.
-    headers: { "TypeSafe-Danger-Zone-Images": "true", ...input.headers },
+    headers: input.headers,
     http: input.http,
   })
   const decision = (modelID: string | ModelID, providerOptions?: ProviderOptions) =>
