@@ -56,7 +56,6 @@ export type CacheTTL = typeof CacheTTL.Type
 export const CacheWarming = Schema.Union([
   Schema.Boolean,
   Schema.Struct({
-    prompt: Schema.String.pipe(optional),
     // Settings hold JSON, so durations stay strings here; the warming plugin parses them.
     interval: Schema.String.pipe(optional).annotate({ description: 'Duration such as "4 minutes"' }),
     duration: Schema.String.pipe(optional).annotate({ description: 'Duration such as "30 minutes"' }),
