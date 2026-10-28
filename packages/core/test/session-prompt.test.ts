@@ -79,6 +79,13 @@ const mediaBlob = Config.testLayer([
     info: new Info({ experimental: new ConfigExperimental.Info({ media_blob: true }) }),
   }),
 ])
+const contextDirectory = "/context"
+const messageContext = Config.testLayer([
+  new Document({
+    type: "document",
+    info: new Info({ experimental: new ConfigExperimental.Info({ message_context: true }) }),
+  }),
+])
 const locations = makeGlobalNode({
   service: LocationServiceMap.Service,
   layer: Layer.effect(
@@ -89,7 +96,11 @@ const locations = makeGlobalNode({
         (ref: Location.Ref) =>
           // oxlint-disable-next-line typescript-eslint/no-unsafe-type-assertion
           Layer.mergeAll(
-            ref.directory === mediaDirectory ? mediaBlob : Layer.empty,
+            ref.directory === mediaDirectory
+              ? mediaBlob
+              : ref.directory === contextDirectory
+                ? messageContext
+                : Layer.empty,
             LayerNode.compile(LayerNode.group([PluginHooks.node, Skill.node]), {
               replacements: [Bus.node.replace(Layer.succeed(Bus.Service, bus))],
             }),
@@ -449,6 +460,48 @@ describe("Session.prompt", () => {
       ])
       const stored = yield* admitted(message.id)
       expect(stored?.type === "user" ? stored.payload.files : undefined).toEqual(message.payload.files)
+    }),
+  )
+
+  it.effect("copies a sender session's title into the origin at admission when message_context is on", () =>
+    Effect.gen(function* () {
+      yield* setup
+      const { db } = yield* Database.Service
+      const session = yield* Session.Service
+      const receiverID = Session.ID.make("ses_prompt_context")
+      yield* db
+        .insert(SessionTable)
+        .values({
+          id: receiverID,
+          project_id: Project.ID.global,
+          slug: "context",
+          directory: contextDirectory,
+          title: "receiver",
+          version: "test",
+        })
+        .run()
+        .pipe(Effect.orDie)
+      const origin = { kind: "session", sessionID }
+
+      const on = yield* session.prompt({
+        sessionID: receiverID,
+        text: "from another session",
+        metadata: { "opencode.origin": origin, source: "api" },
+        resume: false,
+      })
+      const off = yield* session.prompt({
+        sessionID,
+        text: "from another session",
+        metadata: { "opencode.origin": origin },
+        resume: false,
+      })
+
+      // The text is stored as sent; only the origin gains the sender's title.
+      expect(on.payload).toMatchObject({
+        text: "from another session",
+        metadata: { "opencode.origin": { ...origin, title: "test" }, source: "api" },
+      })
+      expect(off.payload.metadata).toEqual({ "opencode.origin": origin })
     }),
   )
 

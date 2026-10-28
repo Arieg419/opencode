@@ -17,6 +17,8 @@ import { PluginHooks } from "../plugin/hooks.js"
 import { Skill } from "../skill.js"
 import { SessionBlob } from "./blob.js"
 import { AttachmentError, SkillNotFoundError } from "./error.js"
+import { SessionHistory } from "./history.js"
+import { MessageContext } from "./message-context.js"
 import { SessionStored } from "./stored.js"
 
 // Image types the resizer can decode; others such as HEIC and AVIF go to the provider unchanged.
@@ -83,10 +85,22 @@ export const prepare = Effect.fn("SessionPrompt.prepare")(function* (request: {
       agents: input.agents,
       files,
       skills: selected?.length ? selected : undefined,
-      metadata: event.metadata,
+      metadata: yield* withSenderTitle(event.metadata),
     }),
     delivery: event.delivery,
   } satisfies SessionInbox.Item
+})
+
+// With `experimental.message_context` on, a session origin keeps its sender's title from when it arrived. History
+// reads the sender's current title instead and uses this copy only once the sender has none.
+const withSenderTitle = Effect.fnUntraced(function* (metadata: Record<string, unknown> | undefined) {
+  if (metadata === undefined) return metadata
+  const origin = Option.getOrUndefined(MessageContext.decodeOrigin(metadata[MessageContext.ORIGIN]))
+  if (origin?.kind !== "session" || origin.title !== undefined) return metadata
+  if (!(yield* SessionHistory.messageContextEnabled)) return metadata
+  const { db } = yield* Database.Service
+  const title = (yield* SessionHistory.senderTitles(db, [origin.sessionID])).get(origin.sessionID)
+  return title === undefined ? metadata : { ...metadata, [MessageContext.ORIGIN]: { ...origin, title } }
 })
 
 const materializeAttachment = Effect.fn("SessionPrompt.materializeAttachment")(function* (
