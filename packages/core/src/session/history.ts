@@ -1,9 +1,8 @@
-import { and, asc, desc, eq, gte, inArray, lt, or, sql } from "drizzle-orm"
+import { and, asc, desc, eq, gte, lt, or, sql } from "drizzle-orm"
 import { Message } from "@opencode/ai/effect"
 import { Effect, Option, Schema } from "effect"
 import type { Model } from "@opencode/schema/model"
 import { SessionLegacy } from "@opencode/schema/session-legacy"
-import { isFallbackTitle } from "@opencode/util/session-title-fallback"
 import { Config } from "../config.js"
 import { Database } from "../database/database.js"
 import { MessageDecodeError } from "./error.js"
@@ -14,7 +13,7 @@ import { Instructions } from "../instructions/index.js"
 import { InstructionState } from "./instruction-state.js"
 import { SessionBlob } from "./blob.js"
 import { SessionRecentText } from "./recent-text.js"
-import { SessionMessageTable, SessionTable } from "./sql.js"
+import { SessionMessageTable } from "./sql.js"
 import { SessionStored } from "./stored.js"
 
 type DatabaseService = Database.Interface["db"]
@@ -140,87 +139,28 @@ export const decodeMessageRowsWithRefs = Effect.fnUntraced(function* (
   )
 })
 
-type Metadata = Readonly<Record<string, unknown>>
-
-/** Reads `experimental.message_context` from the Config in scope; without one, it is off. */
-export const messageContextEnabled = Effect.gen(function* () {
+/**
+ * Reads `experimental.message_context` from the Config in scope; without one, it is off. Only readers that build
+ * model requests call it, inside the Session's own location.
+ */
+const messageContextEnabled = Effect.gen(function* () {
   const config = yield* Effect.serviceOption(Config.Service)
   if (Option.isNone(config)) return false
   return Config.latest(yield* config.value.entries(), "experimental")?.message_context === true
 })
 
-/** The titles of the sender sessions that still exist and have one, by ID. */
-export const senderTitles = Effect.fnUntraced(function* (db: DatabaseService, ids: ReadonlyArray<SessionSchema.ID>) {
-  if (ids.length === 0) return new Map<SessionSchema.ID, string>()
-  const rows = yield* db
-    .select({ id: SessionTable.id, title: SessionTable.title })
-    .from(SessionTable)
-    .where(inArray(SessionTable.id, [...ids]))
-    .all()
-    .pipe(Effect.orDie)
-  return new Map(
-    rows.flatMap((row) => (row.title === null || isFallbackTitle(row.title) ? [] : [[row.id, row.title] as const])),
-  )
-})
-
-const sessionOrigin = (metadata: Metadata) => {
-  const origin = Option.getOrUndefined(MessageContext.decodeOrigin(metadata[MessageContext.ORIGIN]))
-  return origin?.kind === "session" ? origin : undefined
-}
-
 /**
- * How history rewrites the user metadata the prompt builders render as message context, in memory only, or
- * undefined when nothing changes. With `experimental.message_context` off it drops those keys. On, a session
- * origin reads its sender's current title, or the title copied on arrival once the sender has none.
+ * User metadata without the keys the prompt builders render as message context. Model requests read history
+ * through it while `experimental.message_context` is off, in memory only, so they render nothing.
  */
-const messageContext = Effect.fnUntraced(function* (
-  db: DatabaseService,
-  messages: ReadonlyArray<SessionMessage.Info | SessionStored.User>,
-): Effect.fn.Return<((metadata: Metadata) => Metadata) | undefined> {
-  const metadata = messages
-    .flatMap((message) => (message.type === "user" && message.metadata !== undefined ? [message.metadata] : []))
-    .filter((value) => MessageContext.keys.some((key) => Object.hasOwn(value, key)))
-  if (metadata.length === 0) return undefined
-  if (!(yield* messageContextEnabled))
-    return (value) => Object.fromEntries(Object.entries(value).filter(([key]) => !MessageContext.keys.includes(key)))
-  const ids = [...new Set(metadata.flatMap((value) => sessionOrigin(value)?.sessionID ?? []))]
-  if (ids.length === 0) return undefined
-  const titles = yield* senderTitles(db, ids)
-  return (value) => {
-    const origin = sessionOrigin(value)
-    if (origin === undefined) return value
-    const title = titles.get(origin.sessionID) ?? origin.title
-    return {
-      ...value,
-      [MessageContext.ORIGIN]: {
-        kind: origin.kind,
-        sessionID: origin.sessionID,
-        ...(title === undefined ? {} : { title }),
-      },
-    }
-  }
-})
-
-const withMessageContext = Effect.fnUntraced(function* (
-  db: DatabaseService,
-  entries: ReadonlyArray<{ readonly seq: number; readonly message: SessionMessage.Info }>,
-) {
-  const rewrite = yield* messageContext(
-    db,
-    entries.map((entry) => entry.message),
-  )
-  if (rewrite === undefined) return entries
-  return entries.map((entry) =>
-    entry.message.type === "user" && entry.message.metadata !== undefined
-      ? { ...entry, message: { ...entry.message, metadata: rewrite(entry.message.metadata) } }
-      : entry,
-  )
-})
+const withoutMessageContext = (metadata: Readonly<Record<string, unknown>>) =>
+  Object.fromEntries(Object.entries(metadata).filter(([key]) => !MessageContext.keys.includes(key)))
 
 const messageEntries = Effect.fnUntraced(function* (
   db: DatabaseService,
   sessionID: SessionSchema.ID,
   boundary: Boundary,
+  keepContext: boolean,
   before?: number,
 ): Effect.fn.Return<
   ReadonlyArray<{ readonly seq: number; readonly message: SessionMessage.Info }>,
@@ -247,19 +187,21 @@ const messageEntries = Effect.fnUntraced(function* (
   // A window that cannot replay leaves nothing to start from, so read from the compaction before it.
   const start = decoded[0]
   if (compaction && start && !replayable(start.message, boundary))
-    return yield* messageEntries(db, sessionID, boundary, compaction.seq)
-  const entries = compaction ? yield* withRecentText(db, sessionID, decoded) : decoded
+    return yield* messageEntries(db, sessionID, boundary, keepContext, compaction.seq)
+  const entries = compaction ? yield* withRecentText(db, sessionID, decoded, keepContext) : decoded
   // Re-expansion may cross a native checkpoint whose completion already advanced the instruction
   // epoch: the baseline supersedes the chronological updates before it. Forks seed their baseline
   // at sequence 0 but retain parent sequences, so the copied checkpoint still retires them.
   const native = entries.findLast((entry) => isNativeCompaction(entry.message))
   // Skipped native checkpoints are not textual summaries. Their original transcript remains available.
-  return yield* withMessageContext(
-    db,
-    entries.filter(
-      (entry) =>
-        !(entry.message.type === "system" && native && entry.seq < native.seq) && replayable(entry.message, boundary),
-    ),
+  return entries.flatMap((entry) =>
+    !(entry.message.type === "system" && native && entry.seq < native.seq) && replayable(entry.message, boundary)
+      ? [
+          keepContext || entry.message.type !== "user" || entry.message.metadata === undefined
+            ? entry
+            : { ...entry, message: { ...entry.message, metadata: withoutMessageContext(entry.message.metadata) } },
+        ]
+      : [],
   )
 })
 
@@ -272,6 +214,7 @@ const withRecentText = Effect.fnUntraced(function* (
   db: DatabaseService,
   sessionID: SessionSchema.ID,
   entries: ReadonlyArray<{ readonly seq: number; readonly message: SessionMessage.Info }>,
+  keepContext: boolean,
 ) {
   const first = entries[0]
   const compaction = first?.message
@@ -300,13 +243,12 @@ const withRecentText = Effect.fnUntraced(function* (
     .pipe(Effect.orDie)
   // The recent text names attachments by mime and name only, so their bytes are never read.
   const kept = yield* Effect.forEach(rows, decodeStoredRow, { concurrency: 1 })
-  const rewrite = yield* messageContext(db, kept)
   const recent = kept
     .map((message) =>
       SessionRecentText.messageToText(
-        rewrite !== undefined && message.type === "user" && message.metadata !== undefined
-          ? { ...message, metadata: rewrite(message.metadata) }
-          : message,
+        keepContext || message.type !== "user" || message.metadata === undefined
+          ? message
+          : { ...message, metadata: withoutMessageContext(message.metadata) },
       ),
     )
     .filter(Boolean)
@@ -314,12 +256,22 @@ const withRecentText = Effect.fnUntraced(function* (
   return [{ ...first, message: { ...compaction, metadata: { ...compaction.metadata, recent } } }, ...entries.slice(1)]
 })
 
+/** The Session's history with metadata as stored. Model requests read {@link loadForModel} instead. */
 export const load = Effect.fn("SessionHistory.load")(function* (
   db: DatabaseService,
   sessionID: SessionSchema.ID,
   boundary: Boundary,
 ) {
-  return (yield* messageEntries(db, sessionID, boundary)).map((entry) => entry.message)
+  return (yield* messageEntries(db, sessionID, boundary, true)).map((entry) => entry.message)
+})
+
+/** {@link load} for a model request, with message context as `experimental.message_context` configures it. */
+export const loadForModel = Effect.fn("SessionHistory.loadForModel")(function* (
+  db: DatabaseService,
+  sessionID: SessionSchema.ID,
+  boundary: Boundary,
+) {
+  return (yield* messageEntries(db, sessionID, boundary, yield* messageContextEnabled)).map((entry) => entry.message)
 })
 
 export const entriesForRunner = Effect.fn("SessionHistory.entriesForRunner")(function* (
@@ -328,10 +280,11 @@ export const entriesForRunner = Effect.fn("SessionHistory.entriesForRunner")(fun
   instructions: Instructions.List,
   boundary: Boundary,
 ) {
+  const keepContext = yield* messageContextEnabled
   return yield* db
     .transaction(() =>
       Effect.gen(function* () {
-        const messages = yield* messageEntries(db, sessionID, boundary)
+        const messages = yield* messageEntries(db, sessionID, boundary, keepContext)
         return {
           initial: yield* InstructionState.initial(db, sessionID, instructions),
           entries: messages,
@@ -348,10 +301,11 @@ export const preview = Effect.fn("SessionHistory.preview")(function* (
   boundary: Boundary,
 ) {
   const observed = yield* Instructions.read(instructions)
+  const keepContext = yield* messageContextEnabled
   return yield* db
     .transaction(() =>
       Effect.gen(function* () {
-        const messages = yield* messageEntries(db, sessionID, boundary)
+        const messages = yield* messageEntries(db, sessionID, boundary, keepContext)
         // An active assistant may contain an unresolved tool call, so only preview the settled prefix.
         const unsettled = messages.findIndex(
           (entry) => entry.message.type === "assistant" && entry.message.time.completed === undefined,

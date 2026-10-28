@@ -43,19 +43,36 @@ const user = (text: string, metadata?: Record<string, unknown>) =>
   })
 
 describe("MessageContext.format", () => {
-  test("renders a session origin with its title, or unknown without one", () => {
-    expect(MessageContext.format({ [ORIGIN]: { kind: "session", sessionID: senderID, title: "OPENCODE IOS" } })).toBe(
-      `<message-origin session="${senderID}" title="OPENCODE IOS"/>`,
+  test("renders a session origin with its title, or the session alone without one", () => {
+    expect(MessageContext.format({ [ORIGIN]: { kind: "session", sessionID: senderID, title: "Fix login" } })).toBe(
+      `<message-origin session="${senderID}" title="Fix login"/>`,
     )
     expect(MessageContext.format({ [ORIGIN]: { kind: "session", sessionID: senderID } })).toBe(
-      `<message-origin session="${senderID}" title="unknown"/>`,
+      `<message-origin session="${senderID}"/>`,
+    )
+    expect(MessageContext.format({ [ORIGIN]: { kind: "session", sessionID: senderID, title: "  " } })).toBe(
+      `<message-origin session="${senderID}"/>`,
     )
   })
 
   test("renders a tool origin by name", () => {
-    expect(MessageContext.format({ [ORIGIN]: { kind: "tool", name: "ios-train" } })).toBe(
-      `<message-origin tool="ios-train"/>`,
+    expect(MessageContext.format({ [ORIGIN]: { kind: "tool", name: "release-bot" } })).toBe(
+      `<message-origin tool="release-bot"/>`,
     )
+  })
+
+  test("keeps titles and tool names on one line, trimmed and at most 100 characters", () => {
+    expect(
+      MessageContext.format({ [ORIGIN]: { kind: "session", sessionID: senderID, title: " Fix\nlogin\r\n  now " } }),
+    ).toBe(`<message-origin session="${senderID}" title="Fix login now"/>`)
+    expect(MessageContext.format({ [ORIGIN]: { kind: "tool", name: "release\nbot" } })).toBe(
+      `<message-origin tool="release bot"/>`,
+    )
+    expect(MessageContext.format({ [ORIGIN]: { kind: "tool", name: " \n " } })).toBe("")
+    expect(MessageContext.format({ [ORIGIN]: { kind: "session", sessionID: senderID, title: "a".repeat(150) } })).toBe(
+      `<message-origin session="${senderID}" title="${"a".repeat(100)}"/>`,
+    )
+    expect(MessageContext.cleanName("😀".repeat(101))).toBe("😀".repeat(100))
   })
 
   test("escapes attribute values", () => {
@@ -80,8 +97,8 @@ describe("MessageContext.format", () => {
 })
 
 describe("prompt builders", () => {
-  const origin = { [ORIGIN]: { kind: "session", sessionID: senderID, title: "OPENCODE IOS" } }
-  const line = `<message-origin session="${senderID}" title="OPENCODE IOS"/>`
+  const origin = { [ORIGIN]: { kind: "session", sessionID: senderID, title: "Fix login" } }
+  const line = `<message-origin session="${senderID}" title="Fix login"/>`
 
   test("toLLMMessages puts the context line before the text the person typed", () => {
     expect(toLLMMessages([user("rebase the PRs", origin)], model)[0]?.content).toEqual([
@@ -155,7 +172,7 @@ const setup = (title: string | undefined) =>
       return id
     })
     const texts = (enabled: boolean) =>
-      SessionHistory.load(db, receiverID, "local").pipe(
+      SessionHistory.loadForModel(db, receiverID, "local").pipe(
         Effect.provide(flag(enabled)),
         Effect.map((history) =>
           toLLMMessages(history, model).flatMap((message) =>
@@ -166,17 +183,20 @@ const setup = (title: string | undefined) =>
     return { db, bus, prompt, texts }
   })
 
-const tag = (title: string) => `<message-origin session="${senderID}" title="${title}"/>`
+const tag = (title?: string) =>
+  title === undefined
+    ? `<message-origin session="${senderID}"/>`
+    : `<message-origin session="${senderID}" title="${title}"/>`
 
 describe("SessionHistory message context", () => {
-  it.effect("with the flag off, drops the key so the request matches a message without it", () =>
+  it.effect("model reads drop the key with the flag off, so the request matches a message without it", () =>
     Effect.gen(function* () {
-      const s = yield* setup("OPENCODE IOS")
-      yield* s.prompt("hello", { [ORIGIN]: { kind: "session", sessionID: senderID, title: "OPENCODE IOS" } })
+      const s = yield* setup("Fix login")
+      yield* s.prompt("hello", { [ORIGIN]: { kind: "session", sessionID: senderID, title: "Fix login" } })
       for (const history of [
-        yield* SessionHistory.load(s.db, receiverID, "local").pipe(Effect.provide(flag(false))),
+        yield* SessionHistory.loadForModel(s.db, receiverID, "local").pipe(Effect.provide(flag(false))),
         // Without any Config in scope the flag is off too.
-        yield* SessionHistory.load(s.db, receiverID, "local"),
+        yield* SessionHistory.loadForModel(s.db, receiverID, "local"),
       ]) {
         const [message] = history
         if (message?.type !== "user") return yield* Effect.die("Expected a user message")
@@ -187,61 +207,72 @@ describe("SessionHistory message context", () => {
     }),
   )
 
-  it.effect("with the flag on, reads the sender's current title over the copy", () =>
+  it.effect("stored reads return metadata as stored whatever the flag", () =>
     Effect.gen(function* () {
-      const s = yield* setup("OPENCODE IOS")
-      yield* s.prompt("hello", { [ORIGIN]: { kind: "session", sessionID: senderID, title: "Old title" } })
-      yield* s.prompt("tool says hi", { [ORIGIN]: { kind: "tool", name: "ios-train" } })
-      yield* s.prompt("typed by a person")
-      expect(yield* s.texts(true)).toEqual([
-        `${tag("OPENCODE IOS")}\nhello`,
-        `<message-origin tool="ios-train"/>\ntool says hi`,
-        "typed by a person",
+      const s = yield* setup("Fix login")
+      const store = yield* SessionStore.Service
+      const origin = { kind: "session", sessionID: senderID, title: "Fix login" }
+      yield* s.prompt("hello", { [ORIGIN]: origin, source: "api" })
+      for (const messages of [
+        yield* store.context(receiverID),
+        yield* store.context(receiverID).pipe(Effect.provide(flag(false))),
+        yield* SessionHistory.load(s.db, receiverID, "latest").pipe(Effect.provide(flag(true))),
       ])
-      yield* s.bus.publish(SessionEvent.Renamed, { sessionID: senderID, title: "iOS HOME" })
-      expect((yield* s.texts(true))[0]).toBe(`${tag("iOS HOME")}\nhello`)
+        expect(messages.map((message) => message.metadata)).toEqual([{ [ORIGIN]: origin, source: "api" }])
+    }),
+  )
+
+  it.effect("with the flag on, renders the saved title, which never changes after the message is sent", () =>
+    Effect.gen(function* () {
+      const s = yield* setup("Fix login")
+      yield* s.prompt("hello", { [ORIGIN]: { kind: "session", sessionID: senderID, title: "Fix login" } })
+      yield* s.prompt("tool says hi", { [ORIGIN]: { kind: "tool", name: "release-bot" } })
+      yield* s.prompt("typed by a person")
+      const expected = [
+        `${tag("Fix login")}\nhello`,
+        `<message-origin tool="release-bot"/>\ntool says hi`,
+        "typed by a person",
+      ]
+      expect(yield* s.texts(true)).toEqual(expected)
+      // Renaming or deleting the sender leaves earlier lines alone, so the receiver's prompt cache holds.
+      yield* s.bus.publish(SessionEvent.Renamed, { sessionID: senderID, title: "Login fixes" })
+      expect(yield* s.texts(true)).toEqual(expected)
+      yield* s.db.delete(SessionTable).where(eq(SessionTable.id, senderID)).run()
+      expect(yield* s.texts(true)).toEqual(expected)
       expect(yield* s.texts(false)).toEqual(["hello", "tool says hi", "typed by a person"])
     }),
   )
 
-  it.effect("falls back to the copied title once the sender is deleted, and to unknown without one", () =>
-    Effect.gen(function* () {
-      const s = yield* setup("OPENCODE IOS")
-      yield* s.prompt("copied", { [ORIGIN]: { kind: "session", sessionID: senderID, title: "OPENCODE IOS" } })
-      yield* s.prompt("not copied", { [ORIGIN]: { kind: "session", sessionID: senderID } })
-      yield* s.db.delete(SessionTable).where(eq(SessionTable.id, senderID)).run()
-      expect(yield* s.texts(true)).toEqual([`${tag("OPENCODE IOS")}\ncopied`, `${tag("unknown")}\nnot copied`])
-    }),
-  )
-
-  it.effect("treats an untitled sender as having no current title", () =>
+  it.effect("renders a sender untitled at admission by its session alone, even once it gets a title", () =>
     Effect.gen(function* () {
       const s = yield* setup(undefined)
-      yield* s.prompt("copied", { [ORIGIN]: { kind: "session", sessionID: senderID, title: "Earlier title" } })
-      yield* s.prompt("not copied", { [ORIGIN]: { kind: "session", sessionID: senderID } })
-      expect(yield* s.texts(true)).toEqual([`${tag("Earlier title")}\ncopied`, `${tag("unknown")}\nnot copied`])
+      yield* s.prompt("early", { [ORIGIN]: { kind: "session", sessionID: senderID } })
+      yield* s.bus.publish(SessionEvent.Renamed, { sessionID: senderID, title: "Auto title" })
+      expect(yield* s.texts(true)).toEqual([`${tag()}\nearly`])
     }),
   )
 
   it.effect("leaves a value that doesn't decode unrendered", () =>
     Effect.gen(function* () {
-      const s = yield* setup("OPENCODE IOS")
+      const s = yield* setup("Fix login")
       yield* s.prompt("hello", { [ORIGIN]: { kind: "session", sessionID: 42 } })
       expect(yield* s.texts(true)).toEqual(["hello"])
     }),
   )
 
-  it.effect("rebuilds a compaction's recent text with the current title and one [User]: line", () =>
+  it.effect("builds a compaction's recent text with one [User]: line, as the flag configures", () =>
     Effect.gen(function* () {
-      const s = yield* setup("OPENCODE IOS")
-      const keepID = yield* s.prompt("kept", { [ORIGIN]: { kind: "session", sessionID: senderID } })
+      const s = yield* setup("Fix login")
+      const keepID = yield* s.prompt("kept", {
+        [ORIGIN]: { kind: "session", sessionID: senderID, title: "Fix login" },
+      })
       yield* s.bus.publish(
         SessionEvent.Compaction.Ended,
         { sessionID: receiverID, reason: "manual", model, text: "summary" },
         { metadata: { keepID } },
       )
       const recent = (enabled: boolean) =>
-        SessionHistory.load(s.db, receiverID, "latest").pipe(
+        SessionHistory.loadForModel(s.db, receiverID, "latest").pipe(
           Effect.provide(flag(enabled)),
           Effect.map((history) => {
             const compaction = history[0]
@@ -250,7 +281,7 @@ describe("SessionHistory message context", () => {
               : undefined
           }),
         )
-      expect(yield* recent(true)).toBe(`[User]: ${tag("OPENCODE IOS")}\nkept`)
+      expect(yield* recent(true)).toBe(`[User]: ${tag("Fix login")}\nkept`)
       expect(yield* recent(false)).toBe("[User]: kept")
     }),
   )
