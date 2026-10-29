@@ -50,7 +50,10 @@ export const Plugin = define({
         ConfigProvider.Info,
         {
           readonly providerID: string
-          readonly models: ReadonlyMap<string, { readonly inherit: boolean; readonly base?: Model.Info }>
+          readonly models: ReadonlyMap<
+            string,
+            { readonly inherit: boolean; readonly base?: Model.Info; readonly package?: string }
+          >
         }
       >(),
     }
@@ -58,14 +61,21 @@ export const Plugin = define({
       const next: typeof sources.models = new Map()
       for (const [id, item] of configuredProviders(loaded.entries)) {
         const providerID = id
-        const { current, source, changed } = overlayProvider(providers, providerID, item)
-        const definitions = new Map<string, { readonly inherit: boolean; readonly base?: Model.Info }>()
+        const { current, source, sourcePackage, changed } = overlayProvider(providers, providerID, item)
+        const definitions = new Map<
+          string,
+          { readonly inherit: boolean; readonly base?: Model.Info; readonly package?: string }
+        >()
         for (const [id, config] of Object.entries(item.models ?? {})) {
           const base = source?.models.get(config.modelID ?? id) ?? source?.models.get(id)
           const inherit = changed || !current?.models.has(id)
           // Bind the source at this point in the provider fold. Later source edits/removal
           // and its credential availability must not change an already-defined alias.
-          definitions.set(id, { inherit, base: base && structuredClone(base) })
+          definitions.set(id, {
+            inherit,
+            base: base && structuredClone(base),
+            package: base?.package ?? sourcePackage,
+          })
           if (!inherit) continue
           providers.models.update(providerID, id, (model) => {
             if (base) Object.assign(model, structuredClone(base))
@@ -101,34 +111,39 @@ export const Plugin = define({
       if (configuredDefault !== undefined) models.default.set(configuredDefault.providerID, configuredDefault.model)
       for (const [item, definition] of sources.models) {
         const providerID = definition.providerID
+        const providerPackage = models.provider.get(providerID)?.provider.package
         for (const [id, config] of Object.entries(item.models ?? {})) {
           const source = definition.models.get(id)
-          const inherit = source?.inherit || !models.get(providerID, id)
+          const existing = models.get(providerID, id)
+          const inherit = source?.inherit || !existing
+          const hadVariants = (existing?.variants.length ?? 0) > 0
+          const hadPriorVariants = inherit && source?.base ? source.base.variants.length > 0 : hadVariants
+          const beforePackage =
+            (inherit && source?.base ? source.base.package : existing?.package) ?? source?.package ?? providerPackage
           overlay(
             models,
-            models.provider.get(providerID)?.provider.package,
+            providerPackage,
             item,
             providerID,
             id,
             config,
             inherit && source?.base ? { base: source.base } : undefined,
           )
-          // Inherited variants are spelled for the base model's package, so a package override needs fresh ones.
-          // A base without variants has no reasoning support to respell.
-          const repackaged =
-            source?.base !== undefined &&
-            source.base.variants.length > 0 &&
-            models.get(providerID, id)?.package !== source.base.package
+          // Inherited or earlier-transform variants are spelled for the previous package, so a package override needs
+          // fresh ones. A base without variants has no reasoning support to respell.
+          const afterPackage = models.get(providerID, id)?.package ?? providerPackage
+          const repackaged = hadPriorVariants && afterPackage !== beforePackage
           if (
             config.variants === undefined &&
             config.capabilities?.reasoning === undefined &&
-            (!source?.base || repackaged)
+            // Custom models start without variants, so non-empty variants here came from an earlier transform.
+            ((!source?.base && !hadVariants) || repackaged)
           )
             models.update(providerID, id, (model) => {
               model.variants = [
                 ...Variant.resolve({
                   ...model,
-                  package: model.package ?? models.provider.get(providerID)?.provider.package,
+                  package: afterPackage,
                 }),
               ]
             })
@@ -181,6 +196,7 @@ function overlayProvider(
 ) {
   const current = providers.get(providerID)
   const source = providers.get(item.canonical ?? current?.provider.canonical ?? providerID)
+  const sourcePackage = source?.provider.package
   const changed = item.canonical !== undefined && item.canonical !== current?.provider.canonical
   providers.update(providerID, (provider) => {
     if (changed && source && source.provider !== provider)
@@ -198,7 +214,7 @@ function overlayProvider(
     if (item.headers !== undefined) provider.headers = Provider.mergeHeaders(provider.headers, item.headers)
     if (item.body !== undefined) provider.body = Provider.mergeOverlay(provider.body, item.body)
   })
-  return { current, source, changed }
+  return { current, source, sourcePackage, changed }
 }
 
 /** Applies one configured model, first resetting it to `inherit.base` when it starts again from the catalog. */

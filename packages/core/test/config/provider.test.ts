@@ -818,6 +818,56 @@ describe("ConfigProviderPlugin.Plugin", () => {
     }),
   )
 
+  it.effect("preserves plugin-supplied variants unless config moves the model to another package", () =>
+    Effect.gen(function* () {
+      const models = yield* Model.Service
+      const providerID = Provider.ID.make("custom")
+      const customTiers = ["none", "low", "medium", "xhigh"].map((id) => ({
+        id: Model.VariantID.make(id),
+        settings: { reasoningEffort: id },
+      }))
+      yield* models.transform((editor) => {
+        for (const id of ["plain", "same-package", "moved"])
+          editor.update(providerID, Model.ID.make(id), (model) => {
+            model.variants = structuredClone(customTiers)
+          })
+      })
+      yield* addPlugin([
+        new Document({
+          type: "document",
+          info: decode({
+            providers: {
+              custom: {
+                package: "aisdk:@ai-sdk/openai-compatible",
+                models: {
+                  plain: { name: "Plain" },
+                  "same-package": { package: "aisdk:@ai-sdk/openai-compatible" },
+                  moved: {
+                    modelID: "claude-opus-4-8",
+                    package: "aisdk:@ai-sdk/anthropic",
+                  },
+                },
+              },
+            },
+          }),
+        }),
+      ])
+
+      const ids = (id: string) =>
+        models
+          .get(providerID, Model.ID.make(id))
+          .pipe(Effect.map((model) => required(model).variants.map((variant) => variant.id)))
+      expect(yield* ids("plain")).toEqual(customTiers.map((variant) => variant.id))
+      expect(yield* ids("same-package")).toEqual(customTiers.map((variant) => variant.id))
+      const moved = required(yield* models.get(providerID, Model.ID.make("moved")))
+      expect(moved.package).toBe("@opencode/ai/providers/anthropic")
+      expect(moved.variants.find((variant) => variant.id === "high")).toEqual({
+        id: Model.VariantID.make("high"),
+        settings: { effort: "high", thinking: { type: "adaptive", display: "summarized" } },
+      })
+    }),
+  )
+
   it.effect("respells inherited variants when config moves a catalog model to another package", () =>
     Effect.gen(function* () {
       const providers = yield* Provider.Service
