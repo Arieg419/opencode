@@ -72,6 +72,7 @@ describe("PersistentPty session cleanup", () => {
         const second = yield* session.create({ location })
         const stuck = yield* pty.create(first.id, { args: [], cwd: directory.path, title: "stuck", env: {} })
         const terminal = yield* pty.create(second.id, { args: [], cwd: directory.path, title: "second", env: {} })
+        yield* pty.control(stuck.id, "att", 80, 24)
         daemon.failTerminate.add(stuck.id)
         const removed = yield* nextRemoved(bus)
 
@@ -80,6 +81,8 @@ describe("PersistentPty session cleanup", () => {
 
         expect((yield* Fiber.join(removed)).data).toEqual({ sessionID: second.id, ptyID: terminal.id })
         expect((yield* pty.list()).map((item) => item.id)).toEqual([stuck.id])
+        // The fake daemon rejects read_rows, so a stale selection would fail instead of returning null.
+        expect(yield* pty.read(first.id)).toBeNull()
       }).pipe(Effect.provide(layer(daemon)))
     }),
   )
@@ -96,20 +99,21 @@ const fakeDaemon = Effect.fn(function* () {
   const socket = path.join(base, "daemon.sock")
   const terminals: ReturnType<typeof terminal>[] = []
   const failTerminate = new Set<string>()
+  let nextID = 1
   yield* listen(socket, (_socket, request) => {
     if (request.op === "ping") return pong
     if (request.op === "list") return { type: "terminals", terminals }
     if (request.op === "create") {
-      const created = terminal(terminals.length + 1, String(request.group_id))
+      const created = terminal(nextID++, String(request.group_id))
       terminals.push(created)
       return { type: "created", terminal: created }
     }
+    if (request.op === "control") return { type: "ok" }
     if (request.op === "terminate") {
       if (failTerminate.has(`pty_persistent_${request.id}`)) return { type: "error", message: "terminate failed" }
-      terminals.splice(
-        terminals.findIndex((item) => item.id === request.id),
-        1,
-      )
+      const index = terminals.findIndex((item) => item.id === request.id)
+      if (index === -1) return { type: "error", message: `terminal not found: ${String(request.id)}` }
+      terminals.splice(index, 1)
       return { type: "ok" }
     }
     return { type: "error", message: `unexpected request: ${String(request.op)}` }

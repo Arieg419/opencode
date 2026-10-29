@@ -356,7 +356,7 @@ const makeLayer = (options: Options = {}) =>
                       }),
                   }),
                 ),
-              { concurrency: "unbounded", discard: true },
+              { discard: true },
             ),
           ),
           Effect.catchTag("PersistentPty.UnavailableError", (error) =>
