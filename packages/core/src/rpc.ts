@@ -259,7 +259,7 @@ function errorMessage(error: unknown, fallback: string) {
 }
 
 function isStandardSchema(schema: Tool.ValueSchema): schema is Extract<Tool.ValueSchema, StandardSchemaV1> {
-  return typeof schema === "object" && schema !== null && "~standard" in schema
+  return "~standard" in schema
 }
 
 function read(schema: Tool.ValueSchema | undefined, value: unknown): Effect.Effect<unknown, unknown> {

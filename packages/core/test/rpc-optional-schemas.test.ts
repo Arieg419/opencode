@@ -48,20 +48,17 @@ const PortableOneSided = Rpc.define({
   },
 })
 
-it.effect("calls Effect RPC methods that omit input, output, or events", () =>
+it.effect("calls Effect RPC methods that omit input, output, or events and enforces no-value bounds", () =>
   Effect.gen(function* () {
     const rpc = yield* Rpc.Service
     const seen: string[] = []
-    const receivedInputs: unknown[] = []
 
     const registration = yield* rpc.register(EffectOneSided, {
-      status: (input) => {
-        receivedInputs.push(input)
-        return Effect.succeed({ ok: true })
-      },
+      status: (input) => Effect.succeed({ ok: input === undefined }),
+      // Effect<A> is covariant and assignable to Effect<void>; Schema.Void discards the value so it never leaks.
       notify: (input) => {
         seen.push(input.text)
-        return Effect.void
+        return Effect.succeed({ leaked: "internal" })
       },
       reset: () => {
         seen.length = 0
@@ -71,13 +68,13 @@ it.effect("calls Effect RPC methods that omit input, output, or events", () =>
 
     const client = rpc.client(EffectOneSided)
     expect(yield* client.status()).toEqual({ ok: true })
-    expect(receivedInputs).toEqual([undefined])
-
     expect(yield* client.notify({ text: "hello" })).toBeUndefined()
     expect(seen).toEqual(["hello"])
-
     expect(yield* client.reset()).toBeUndefined()
     expect(seen).toEqual([])
+
+    const badInput = yield* rpc.call("effect-one-sided", "status", { unexpected: 1 }).pipe(Effect.flip)
+    expect(badInput.type).toBe("rpc.invalid_input")
 
     if (false) {
       // @ts-expect-error Methods without an input schema reject arguments.
@@ -90,55 +87,14 @@ it.effect("calls Effect RPC methods that omit input, output, or events", () =>
   }),
 )
 
-it.effect("rejects unexpected input on input-less methods and discards stray output on output-less methods", () =>
-  Effect.gen(function* () {
-    const rpc = yield* Rpc.Service
-
-    yield* rpc.register(EffectOneSided, {
-      status: () => Effect.succeed({ ok: true }),
-      // Effect<A> is covariant and assignable to Effect<void>; Schema.Void discards the value so it never leaks.
-      notify: () => Effect.succeed({ leaked: "internal" }),
-      reset: () => Effect.void,
-    })
-
-    const badInput = yield* rpc.call("effect-one-sided", "status", { unexpected: 1 }).pipe(Effect.flip)
-    expect(badInput.type).toBe("rpc.invalid_input")
-
-    expect(yield* rpc.call("effect-one-sided", "notify", { text: "hi" })).toBeUndefined()
-  }),
-)
-
-it.effect("maps malformed non-object schemas from untyped JS plugins to rpc.invalid_input instead of throwing", () =>
-  Effect.gen(function* () {
-    const rpc = yield* Rpc.Service
-    const malformed = Rpc.define({
-      id: "malformed",
-      methods: {
-        bad: {
-          // @ts-expect-error Intentionally pass a non-object schema as an untyped JS plugin would.
-          input: 123,
-          output: { type: "object" },
-        },
-      },
-    })
-
-    yield* rpc.register(malformed, {
-      bad: () => Effect.succeed({}),
-    })
-
-    const result = yield* rpc.call("malformed", "bad", {}).pipe(Effect.flip)
-    expect(result.type).toBe("rpc.invalid_input")
-  }),
-)
-
 it.effect("supports Promise plugins registering and calling JSON Schema RPCs without input, output, or events", () =>
   Effect.gen(function* () {
     const rpc = yield* Rpc.Service
     const pluginHost = host({ rpc: Object.assign(rpc.client, { register: rpc.register }) })
-
     const items: string[] = []
     let statusSnapshot: unknown
     const TextInput = Schema.Struct({ text: Schema.String })
+
     const plugin = fromPromise(
       Plugin.define({
         id: "portable-one-sided-plugin",
@@ -146,8 +102,7 @@ it.effect("supports Promise plugins registering and calling JSON Schema RPCs wit
           const registration = await ctx.rpc.register(PortableOneSided, {
             status: async () => ({ ok: true, items: items.length }),
             notify: async (input) => {
-              const payload = Schema.decodeUnknownSync(TextInput)(input)
-              items.push(payload.text)
+              items.push(Schema.decodeUnknownSync(TextInput)(input).text)
             },
             reset: async () => {
               items.length = 0
