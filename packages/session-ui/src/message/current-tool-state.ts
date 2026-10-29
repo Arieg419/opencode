@@ -59,7 +59,6 @@ const decodeExecuteCall = Schema.decodeUnknownOption(
     tool: Schema.String,
     status: Schema.Literals(["running", "completed", "error"]),
     input: Schema.optionalKey(Schema.Record(Schema.String, Schema.Unknown)),
-    error: Schema.optionalKey(Schema.String),
   }),
 )
 

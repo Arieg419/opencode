@@ -258,7 +258,7 @@ export const ExecuteFailed = {
           "execute",
           "completed",
           {
-            code: 'const tab = await tools.browser.tabs.open({\n  url: "http://localhost:4399",\n  focus: true\n});\nawait tools.browser.wait({ tabID: tab.id, condition: "load", timeoutMs: 5000 }).catch(() => {});\nconst shot = await tools.browser.screenshot({ tabID: tab.id, fullPage: true });\nreturn { tab, shot };\n',
+            code: 'const tab = await tools.browser.tabs.open({\n  url: "http://localhost:4399",\n  focus: true\n});\nawait tools.browser.wait({ tabID: tab.id, condition: "load", timeoutMs: 5000 });\nconst shot = await tools.browser.screenshot({ tabID: tab.id, fullPage: true });\nreturn { tab, shot };\n',
           },
           {
             output:
@@ -273,9 +273,8 @@ export const ExecuteFailed = {
                 },
                 {
                   tool: "browser.wait",
-                  status: "error",
+                  status: "completed",
                   input: { tabID: "tab_4f1c", condition: "load", timeoutMs: 5000 },
-                  error: "browser.wait timed out after 5000 ms waiting for load.",
                 },
                 { tool: "browser.screenshot", status: "error", input: { tabID: "tab_4f1c", fullPage: true } },
               ],

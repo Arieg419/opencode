@@ -70,19 +70,6 @@ story("lists a failed execute's calls and keeps its error under the failed call"
   )
 })
 
-story("keeps a caught call's own error on its row", async ({ mount }) => {
-  const timeline = await mount("current-session-terminal-work--execute-failed")
-  await timeline.getByRole("button", { name: /^Used 5 / }).click()
-  const tool = timeline.locator('[data-timeline-part-id="tool_execute_failed_screenshot"]')
-  const calls = tool.locator('[data-slot="execute-tool-call"]')
-  await expect(calls.nth(1)).toHaveAttribute("data-status", "error")
-  await calls.nth(1).click()
-  // The script caught this failure, so the error comes from the call itself, not the script's output.
-  await expect(tool.locator('[data-slot="execute-tool-error"]')).toHaveText(
-    "browser.wait timed out after 5000 ms waiting for load.",
-  )
-})
-
 // Moved from packages/app/e2e/regression/session-timeline-tool-projection.spec.ts
 story("transitions shell and question through running error outcomes", async ({ mount }) => {
   const timeline = await mount("current-session-research-agents--agent-research", { args: { scenario: "transition" } })
