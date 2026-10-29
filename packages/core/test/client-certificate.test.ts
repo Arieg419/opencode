@@ -3,11 +3,15 @@ import fs from "fs/promises"
 import { afterAll, beforeAll, describe, expect, test } from "bun:test"
 import { Effect, Layer, Option, Schema } from "effect"
 import { ConfigNetwork } from "@opencode/schema/config/network"
-import { FetchHttpClient, HttpClient } from "effect/http"
+import { FetchHttpClient, HttpClient, HttpClientRequest } from "effect/http"
+import { RequestExecutor } from "@opencode/ai/route"
 import { ClientCertificate } from "@opencode/core/client-certificate"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
+import { LayerNodePlatform } from "@opencode/core/effect/app-node-platform"
+import { httpClient } from "@opencode/util/effect/app-node-platform"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Global } from "@opencode/util/global"
+import { withEnv } from "./fixture/env"
 import { tmpdir } from "./fixture/tmpdir"
 import { testEffect } from "./lib/effect"
 
@@ -76,7 +80,7 @@ const certificate = (hosts: string[]) => ({
 })
 
 const layer = () =>
-  AppNodeBuilder.build(LayerNode.group([ClientCertificate.httpClient, ClientCertificate.node]), [
+  AppNodeBuilder.build(LayerNode.group([LayerNodePlatform.requestExecutor, httpClient, ClientCertificate.node]), [
     ClientCertificate.node.replace(ClientCertificate.configured({ system: path.join(root.path, "system") })),
     Global.node.replace(
       Global.layerWith({ config: path.join(root.path, "global"), home: path.join(root.path, "home") }),
@@ -84,12 +88,25 @@ const layer = () =>
   ])
 
 // The test CA only verifies the server; trust for real gateways comes from the system store or NODE_EXTRA_CA_CERTS.
+const trusted = <A, E, R>(effect: Effect.Effect<A, E, R>) =>
+  effect.pipe(
+    Effect.provideService(
+      FetchHttpClient.Fetch,
+      Object.assign(
+        (input: Parameters<typeof fetch>[0], init?: BunFetchRequestInit) =>
+          fetch(input, { ...init, tls: { ca, ...init?.tls } }),
+        { preconnect: fetch.preconnect },
+      ),
+    ),
+  )
+
+/** A model request, the only kind that presents client certificates. */
 const get = (host: string, pathname = "/") =>
   Effect.gen(function* () {
-    const client = yield* HttpClient.HttpClient
-    const response = yield* client.get(`https://${host}:${server.port}${pathname}`)
+    const executor = yield* RequestExecutor.Service
+    const response = yield* executor.execute(HttpClientRequest.get(`https://${host}:${server?.port ?? 443}${pathname}`))
     return yield* response.text
-  }).pipe(Effect.provideService(FetchHttpClient.RequestInit, { tls: { ca } } as BunFetchRequestInit))
+  }).pipe(trusted)
 
 describe("ClientCertificate", () => {
   test("accepts hostnames and rejects URLs, ports, and wildcard-only patterns", () => {
@@ -115,6 +132,26 @@ describe("ClientCertificate", () => {
       yield* write("system", certificate(["localhost"]))
       expect(yield* Effect.flip(get("127.0.0.1"))).toBeDefined()
     }).pipe(Effect.provide(layer())),
+  )
+
+  itWithOpenSSL("does not present the certificate on requests other than model requests", () =>
+    Effect.gen(function* () {
+      yield* write("system", certificate(["localhost"]))
+      const client = yield* HttpClient.HttpClient
+      expect(yield* Effect.flip(client.get(`https://localhost:${server.port}/`).pipe(trusted))).toBeDefined()
+    }).pipe(Effect.provide(layer())),
+  )
+
+  it.live("refuses to send the certificate through an HTTPS proxy", () =>
+    withEnv(
+      { HTTPS_PROXY: "https://proxy.test", https_proxy: undefined, NO_PROXY: undefined, no_proxy: undefined },
+      () =>
+        Effect.gen(function* () {
+          yield* write("system", certificate(["llm.corp.test"]))
+          const error = yield* Effect.flip(get("llm.corp.test"))
+          expect(String(error)).toContain("NO_PROXY")
+        }),
+    ).pipe(Effect.provide(layer())),
   )
 
   itWithOpenSSL("fails instead of following a redirect with the certificate", () =>

@@ -75,8 +75,9 @@ opencode service start
 ## Client certificates
 
 When a gateway requires mutual TLS, list the hosts that should receive a client certificate under
-`network.client_certificates`. OpenCode presents the matching certificate on HTTPS requests to those hosts, such as model
-requests and model catalogs, and to no other host.
+`network.client_certificates`. OpenCode presents the matching certificate on model requests to those hosts, and to no
+other host. Other requests, such as web fetches and instruction or skill URLs from configuration, never present it, so a
+fetched page cannot use the machine's identity.
 
 ```jsonc title="/etc/opencode/opencode.json"
 {
@@ -110,8 +111,11 @@ This is a machine setting, so OpenCode reads it only from managed and global con
 within a minute.
 
 Requests that present a client certificate do not follow redirects, because a redirect would present it to the host the
-server names. The server's own certificate is still verified against the system trust store; add a private certificate
-authority with `NODE_EXTRA_CA_CERTS`, described in [Certificates](#certificates).
+server names. They also fail when an `https://` proxy applies, because the proxy's own TLS handshake would receive the
+certificate. Add the gateway to `NO_PROXY`, or use an `http://` proxy, which only tunnels the connection.
+
+The server's own certificate is still verified against the system trust store; add a private certificate authority with
+`NODE_EXTRA_CA_CERTS`, described in [Certificates](#certificates).
 
 Client certificates are not yet presented by remote MCP servers, the WebSocket transport, or AI SDK provider packages
 that OpenCode runs without translating to a native provider. The Node.js build of OpenCode fails requests to a matching
