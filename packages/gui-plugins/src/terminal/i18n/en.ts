@@ -7,6 +7,8 @@ export default {
   loading: "Loading terminal…",
   "title.numbered": "Terminal {{number}}",
   close: "Close terminal",
+  "create.failed": "Couldn't create a terminal",
+  "create.unsupported": "This server is too old for terminals. Update OpenCode on this server.",
   "connectionLost.title": "Connection Lost",
   "connectionLost.abnormalClose": "WebSocket closed abnormally: {{code}}",
   "connectionLost.description": "The terminal connection was interrupted. This can happen when the server restarts.",
