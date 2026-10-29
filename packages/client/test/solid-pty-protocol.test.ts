@@ -24,7 +24,7 @@ describe("decodePersistentPtyMessage", () => {
       {
         type: "attached",
         inputProtocol: 1,
-        info,
+        info: { size: info.size },
         role: "controller",
         generation: 3,
         replay: { requestedOffset: 128, availableOffset: 0, endOffset: 256, truncated: false },
@@ -39,6 +39,21 @@ describe("decodePersistentPtyMessage", () => {
     ]
 
     expect(messages.map(decode)).toEqual(messages)
+  })
+
+  test("reads only the size from attached terminal info, whatever else the server version sends", () => {
+    const attached = (terminal: object) => ({
+      type: "attached",
+      inputProtocol: 1,
+      info: terminal,
+      role: "controller",
+      generation: 3,
+      replay: { requestedOffset: 128, availableOffset: 0, endOffset: 256, truncated: false },
+    })
+
+    expect(decode(attached(info))).toEqual(attached({ size: info.size }))
+    expect(decode(attached({ ...info, userTitle: "build" }))).toEqual(attached({ size: info.size }))
+    expect(decode(attached({ id: "pty_1" }))).toBeUndefined()
   })
 
   test("decodes the fields JSON.stringify drops", () => {

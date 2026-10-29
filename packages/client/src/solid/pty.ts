@@ -6,7 +6,8 @@ export const PersistentPtyMessage = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("attached"),
     inputProtocol: Schema.optional(Schema.Number),
-    info: PersistentPty.Info,
+    // Clients only need the size; the rest of the terminal info changes across server versions.
+    info: Schema.Struct({ size: PersistentPty.Info.fields.size }),
     role: Schema.Literals(["controller", "observer"]),
     generation: Schema.Number,
     replay: Schema.Struct({
