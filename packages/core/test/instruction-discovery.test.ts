@@ -6,12 +6,15 @@ import path from "path"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { Bus } from "@opencode/core/bus"
 import { Config } from "@opencode/core/config"
+import { ConfigIntegration } from "@opencode/core/config/integration"
 import { ConfigInstructionPlugin } from "@opencode/core/config/plugin/instruction"
+import { Credential } from "@opencode/core/credential"
+import { Integration } from "@opencode/core/integration"
 import { Watcher } from "@opencode/core/filesystem/watcher"
 import { InstructionDiscovery } from "@opencode/core/instruction-discovery"
 import { Location } from "@opencode/core/location"
 import { AbsolutePath } from "@opencode/core/schema"
-import { Document, Info } from "@opencode/schema/config"
+import { Document, type Entry, Info } from "@opencode/schema/config"
 import { Event } from "@opencode/schema/event"
 import { FSUtil } from "@opencode/util/fs-util"
 import { Global } from "@opencode/util/global"
@@ -31,11 +34,12 @@ const instructionLayer = (input: {
   locationServiceLayer: Layer.Layer<Location.Service>
   filesystemLayer?: Layer.Layer<FSUtil.Service>
   instructions?: string[]
+  entries?: Entry[]
   http?: HttpClient.HttpClient
   project?: boolean
 }) => {
   const watcher = Watcher.testLayer
-  const config = Config.testLayer(input.instructions ? [configured(input.instructions)] : [])
+  const config = Config.testLayer(input.entries ?? (input.instructions ? [configured(input.instructions)] : []))
   return Layer.mergeAll(
     AppNodeBuilder.build(
       LayerNode.group([
@@ -413,6 +417,73 @@ describe("ConfigInstructionPlugin.Plugin", () => {
               config: path.join(tmp.path, "global"),
               instructions: [first, remote],
               http: respond(() => responses.shift() ?? new Response(null, { status: 500 })),
+              locationServiceLayer: Layer.succeed(
+                Location.Service,
+                Location.Service.of(location({ directory: AbsolutePath.make(tmp.path) })),
+              ),
+            }),
+          ),
+        )
+      }),
+    ),
+  )
+
+  it.live("fetches Console instruction URLs with the Console connection's credentials, and others without", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (tmp) => Effect.promise(() => tmp[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((tmp) => {
+        const library = "https://console.example.test/console/api/v2/library/instructions/ins_1/team.md?v=1"
+        const remote = "https://example.test/instructions.md"
+        const requests: Record<string, { authorization?: string; orgID?: string }> = {}
+        const integration = host().integration
+        const ctx = host({
+          integration: {
+            ...integration,
+            connection: {
+              ...integration.connection,
+              resolve: () =>
+                Effect.succeed(Credential.Key.make({ type: "key", key: "secret", metadata: { orgID: "org_acme" } })),
+            },
+          },
+        })
+        return Effect.gen(function* () {
+          const discovery = yield* start(ctx)
+          expect((yield* readInitial(yield* discovery.load())).text).toBe(
+            [`Instructions from: ${remote}\nremote`, `Instructions from: ${library}\nlibrary`].join("\n\n"),
+          )
+          expect(requests).toEqual({
+            [library]: { authorization: "Bearer secret", orgID: "org_acme" },
+            [remote]: { authorization: undefined, orgID: undefined },
+          })
+        }).pipe(
+          Effect.provide(
+            instructionLayer({
+              config: path.join(tmp.path, "global"),
+              entries: [
+                configured([remote]),
+                ConfigIntegration.make({
+                  integrationID: Integration.ID.make("opencode"),
+                  connection: {
+                    type: "credential",
+                    id: Credential.ID.make("cred_console"),
+                    label: "Acme",
+                    method: "key",
+                  },
+                  origin: "https://console.example.test/console",
+                  info: { instructions: [library] },
+                }),
+              ],
+              http: HttpClient.make((request) => {
+                requests[request.url] = {
+                  authorization: request.headers.authorization,
+                  orgID: request.headers["x-org-id"],
+                }
+                return Effect.succeed(
+                  HttpClientResponse.fromWeb(request, new Response(request.url === library ? "library" : "remote")),
+                )
+              }),
               locationServiceLayer: Layer.succeed(
                 Location.Service,
                 Location.Service.of(location({ directory: AbsolutePath.make(tmp.path) })),

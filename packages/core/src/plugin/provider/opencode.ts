@@ -160,7 +160,9 @@ export const OpencodePlugin = define<HttpClient.HttpClient | Bus.Service | Confi
       remote: ConfigIntegration.Remote | undefined
       connection: ActiveConnection
       organization: string | undefined
-    } = { remote: undefined, connection: undefined, organization: undefined }
+      // The Console server the config came from; its instruction and skill URLs must be under it.
+      origin: string | undefined
+    } = { remote: undefined, connection: undefined, organization: undefined, origin: undefined }
     // Status last reported for the active connection, so inference failures can name the fix.
     let reported: IntegrationConnection.Status | undefined
     let explainers: Effect.Success<ReturnType<typeof ctx.session.hook>>[] = []
@@ -172,7 +174,7 @@ export const OpencodePlugin = define<HttpClient.HttpClient | Bus.Service | Confi
       const connection = yield* ctx.integration.connection.active("opencode")
       if (!connection) {
         reported = undefined
-        return { remote: undefined, connection, organization: undefined }
+        return { remote: undefined, connection, organization: undefined, origin: undefined }
       }
       const status = (status: IntegrationConnection.Status | undefined) => {
         reported = status
@@ -181,12 +183,18 @@ export const OpencodePlugin = define<HttpClient.HttpClient | Bus.Service | Confi
       return yield* ctx.integration.connection.resolve(connection).pipe(
         Effect.flatMap((credential) => {
           if (!credential || credential.type === "external")
-            return Effect.succeed({ remote: undefined, connection, organization: undefined })
-          return fetchConfig(http, credential).pipe(
-            Effect.map((remote) => ({
+            return Effect.succeed<typeof snapshot>({
+              remote: undefined,
+              connection,
+              organization: undefined,
+              origin: undefined,
+            })
+          return Effect.all([fetchConfig(http, credential), normalizeServer(ConsoleAccess.server(credential))]).pipe(
+            Effect.map(([remote, origin]) => ({
               remote,
               connection,
               organization: organizationName(credential),
+              origin,
             })),
           )
         }),
@@ -200,8 +208,8 @@ export const OpencodePlugin = define<HttpClient.HttpClient | Bus.Service | Confi
             // A load that fails for the connection already in place keeps its last config: dropping it
             // would lift organization policy while personal credentials keep working.
             return IntegrationConnection.key(connection) === IntegrationConnection.key(snapshot.connection)
-              ? { remote: snapshot.remote, connection, organization: snapshot.organization }
-              : { remote: undefined, connection, organization: undefined }
+              ? { remote: snapshot.remote, connection, organization: snapshot.organization, origin: snapshot.origin }
+              : { remote: undefined, connection, organization: undefined, origin: undefined }
           }),
         ),
       )
@@ -229,6 +237,7 @@ export const OpencodePlugin = define<HttpClient.HttpClient | Bus.Service | Confi
                 ? { ...next.connection, id: Credential.ID.make(next.connection.id) }
                 : next.connection,
             organization: next.organization,
+            origin: next.origin,
             info: next.remote,
           }),
       )

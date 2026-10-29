@@ -126,5 +126,6 @@ Configured instructions load after `AGENTS.md` files, in the order they are list
 - Local files update like `AGENTS.md` when they change. New files matching a glob load on the next config change.
 - Missing files are skipped. A URL that cannot be fetched is skipped, or keeps its last fetched content.
 - With `OPENCODE_DISABLE_PROJECT_CONFIG=1`, or when the workspace is outside the project, relative entries resolve against the global config directory.
+- A connected [OpenCode Console](/console) workspace can add instruction URLs on its own Console server. OpenCode fetches them with your Console sign-in and ignores any local path, glob, or other server the workspace sends.
 
 See [Config](/config) for configuration locations and precedence.

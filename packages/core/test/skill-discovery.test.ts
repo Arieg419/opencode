@@ -17,7 +17,8 @@ const fixture = Effect.gen(function* () {
     skills: unknown[]
     files: Record<string, string>
     requests: string[]
-  } = { skills: [], files: {}, requests: [] }
+    authorizations: (string | undefined)[]
+  } = { skills: [], files: {}, requests: [], authorizations: [] }
   const server = yield* NodeHttpServer.make(createServer, { host: "127.0.0.1", port: 0 })
   const base = new URL("/catalog/", HttpServer.formatAddress(server.address)).href
   yield* server.serve(
@@ -25,6 +26,7 @@ const fixture = Effect.gen(function* () {
       const request = yield* HttpServerRequest.HttpServerRequest
       const url = new URL(request.url, base)
       state.requests.push(url.href)
+      state.authorizations.push(request.headers.authorization)
       const body =
         url.pathname === "/catalog/index.json" ? JSON.stringify({ skills: state.skills }) : state.files[url.pathname]
       return HttpServerResponse.text(body ?? "Not Found", { status: body === undefined ? 404 : 200 })
@@ -33,21 +35,26 @@ const fixture = Effect.gen(function* () {
   return {
     cache: tmp.path,
     base,
-    pull: (skills: unknown[], files: Record<string, string> = {}) =>
+    pull: (
+      skills: unknown[],
+      files: Record<string, string> = {},
+      options: { url?: string; headers?: Record<string, string> } = {},
+    ) =>
       Effect.gen(function* () {
         state.skills = skills
         state.files = files
         state.requests = []
+        state.authorizations = []
         // Rebuild per pull so repeated calls exercise the disk cache, not a shared service.
         const directories = yield* Effect.gen(function* () {
           const discovery = yield* SkillDiscovery.Service
-          return yield* discovery.pull(base)
+          return yield* discovery.pull(options.url ?? base, options.headers)
         }).pipe(
           Effect.provide(
             AppNodeBuilder.build(SkillDiscovery.node, [Global.node.replace(Global.layerWith({ cache: tmp.path }))]),
           ),
         )
-        return { directories, requests: state.requests.slice() }
+        return { directories, requests: state.requests.slice(), authorizations: state.authorizations.slice() }
       }),
   }
 })
@@ -125,6 +132,40 @@ describe("SkillDiscovery.pull", () => {
         "/catalog/deploy/SKILL.md": "# Ignored",
       })
       expect(third.requests).toEqual([`${catalog.base}index.json`])
+    }),
+  )
+
+  it.live(
+    "sends the given headers with the index and every file",
+    Effect.gen(function* () {
+      const catalog = yield* fixture
+      const result = yield* catalog.pull(
+        [{ name: "deploy", files: ["SKILL.md", "references/guide.md"] }],
+        { "/catalog/deploy/SKILL.md": "# Deploy", "/catalog/deploy/references/guide.md": "# Guide" },
+        { headers: { authorization: "Bearer secret" } },
+      )
+      expect(result.directories).toHaveLength(1)
+      expect(result.authorizations).toEqual(["Bearer secret", "Bearer secret", "Bearer secret"])
+    }),
+  )
+
+  it.live(
+    "reuses the cache when only the URL fragment changes",
+    Effect.gen(function* () {
+      const catalog = yield* fixture
+      const first = yield* catalog.pull(
+        [{ name: "deploy", version: "1", files: ["SKILL.md"] }],
+        { "/catalog/deploy/SKILL.md": "# Deploy" },
+        { url: `${catalog.base}#v=1` },
+      )
+      const second = yield* catalog.pull(
+        [{ name: "deploy", version: "1", files: ["SKILL.md"] }],
+        { "/catalog/deploy/SKILL.md": "# Ignored" },
+        { url: `${catalog.base}#v=2` },
+      )
+      expect(first.requests.toSorted()).toEqual([`${catalog.base}deploy/SKILL.md`, `${catalog.base}index.json`])
+      expect(second.directories).toEqual(first.directories)
+      expect(second.requests).toEqual([`${catalog.base}index.json`])
     }),
   )
 

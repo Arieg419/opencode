@@ -34,6 +34,8 @@ export const Remote = Schema.Struct({
   mcp: Config.Info.fields.mcp,
   policies: Policies.pipe(Schema.optional),
   websearch: Config.Info.fields.websearch,
+  instructions: Config.Info.fields.instructions,
+  skills: Config.Info.fields.skills,
 })
 export type Remote = typeof Remote.Type
 
@@ -47,6 +49,11 @@ export class Document extends Config.Document.extend<Document>("Config.Integrati
   connection: Connection.Info,
   /** Organization behind the connection, named in denials by the document's policies. */
   organization: Schema.optional(Schema.String),
+  /**
+   * Server behind the connection, without a trailing slash. The document's instruction and skill URLs are under it
+   * and are fetched with the connection's credentials.
+   */
+  origin: Schema.optional(Schema.String),
 }) {}
 
 /**
@@ -68,21 +75,31 @@ export function suppliers(entries: readonly Entry[]) {
 
 /**
  * Builds an integration document from the allow-listed keys of a remote config: providers, remote MCP servers,
- * policies, and the web search selection. A remote source can never load plugins, run commands, or change any
- * other local behavior through config.
+ * policies, the web search selection, and instruction and skill URLs under `origin`. A remote source can never load
+ * plugins, run commands, read local files, or change any other local behavior through config.
  */
 export function make(input: {
   readonly integrationID: IntegrationID
   readonly connection: Connection.Info
   readonly organization?: string
+  readonly origin?: string
   readonly info: Remote
 }) {
   const servers = input.info.mcp?.servers
+  // Local paths would read this machine's files into context, and these URLs are fetched with the connection's
+  // credentials, so only URLs under the connection's own server survive.
+  const owned = (sources: readonly string[] | undefined) =>
+    sources?.flatMap((source) => {
+      if (!input.origin || !URL.canParse(source)) return []
+      const url = new URL(source)
+      return /^https?:$/.test(url.protocol) && url.href.startsWith(`${input.origin}/`) ? [url.href] : []
+    })
   return new Document({
     type: "document",
     integrationID: input.integrationID,
     connection: input.connection,
     organization: input.organization,
+    origin: input.origin,
     info: new Config.Info({
       providers:
         input.info.providers &&
@@ -120,6 +137,8 @@ export function make(input: {
         }),
       policies: input.info.policies,
       websearch: input.info.websearch,
+      instructions: owned(input.info.instructions),
+      skills: owned(input.info.skills),
     }),
   })
 }

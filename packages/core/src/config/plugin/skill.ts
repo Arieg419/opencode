@@ -6,12 +6,15 @@ import { FSUtil } from "@opencode/util/fs-util"
 import { Global } from "@opencode/util/global"
 import path from "path"
 import { Effect, FiberMap, PubSub, Semaphore, Stream } from "effect"
+import { FetchHttpClient } from "effect/http"
 import { Config } from "../../config.js"
+import { ConsoleAccess } from "../../console-access.js"
 import { Watcher } from "../../filesystem/watcher.js"
 import { Location } from "../../location.js"
 import { AbsolutePath } from "../../schema.js"
 import { Skill } from "../../skill.js"
 import { SkillDiscovery } from "../../skill/discovery.js"
+import { ConfigIntegration } from "../integration.js"
 import { SkillFile } from "./skill-file.js"
 import { SkillScan } from "./skill-scan.js"
 
@@ -105,11 +108,27 @@ export const Plugin = define({
       return result
     }
 
+    // An integration document's catalogs are under its connection's server and need that connection's credentials.
+    const pull = Effect.fnUntraced(function* (url: string) {
+      const owner = loaded.entries.find(
+        (entry): entry is ConfigIntegration.Document =>
+          entry instanceof ConfigIntegration.Document && (entry.info.skills ?? []).includes(url),
+      )
+      if (!owner) return yield* discovery.pull(url)
+      const credential = yield* ctx.integration.connection.resolve(owner.connection)
+      if (!credential || credential.type === "external")
+        return yield* Effect.fail(new Error(`${owner.integrationID} is not connected`))
+      // The connection's credentials must not follow a redirect to another server.
+      return yield* discovery
+        .pull(url, ConsoleAccess.headers(credential))
+        .pipe(Effect.provideService(FetchHttpClient.RequestInit, { redirect: "error" }))
+    })
+
     const load = Effect.fn("ConfigSkillPlugin.load")(function* (source: Source) {
       const directories =
         source.type === "directory"
           ? [source.path]
-          : yield* discovery.pull(source.url).pipe(
+          : yield* pull(source.url).pipe(
               Effect.catchCause((cause) =>
                 Effect.logWarning("failed to load skill source", {
                   source: Skill.Source.key(source),

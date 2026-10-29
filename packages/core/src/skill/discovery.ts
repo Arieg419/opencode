@@ -56,7 +56,8 @@ class Index extends Schema.Class<Index>("SkillDiscovery.Index")({
 }) {}
 
 export interface Interface {
-  readonly pull: (url: string) => Effect.Effect<AbsolutePath[]>
+  /** Downloads a catalog's skills, sending `headers` with the index and every file request. */
+  readonly pull: (url: string, headers?: Record<string, string>) => Effect.Effect<AbsolutePath[]>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SkillDiscovery") {}
@@ -75,9 +76,14 @@ const layer = Layer.effect(
       HttpClient.filterStatusOk,
     )
 
-    const download = Effect.fn("SkillDiscovery.download")(function* (url: string, destination: string) {
+    const download = Effect.fn("SkillDiscovery.download")(function* (
+      url: string,
+      destination: string,
+      headers: Record<string, string>,
+    ) {
       if (yield* fs.exists(destination).pipe(Effect.orDie)) return true
       return yield* HttpClientRequest.get(url).pipe(
+        HttpClientRequest.setHeaders(headers),
         http.execute,
         Effect.flatMap((response) => response.arrayBuffer),
         Effect.flatMap((body) => fs.writeWithDirs(destination, new Uint8Array(body))),
@@ -89,12 +95,16 @@ const layer = Layer.effect(
     })
 
     return Service.of({
-      pull: Effect.fn("SkillDiscovery.pull")(function* (url) {
-        const base = url.endsWith("/") ? url : `${url}/`
+      pull: Effect.fn("SkillDiscovery.pull")(function* (url, headers = {}) {
+        // A fragment only versions the config entry, so a new fragment reuses the cache and per-skill versions.
+        const unversioned = new URL(url)
+        unversioned.hash = ""
+        const base = unversioned.href.endsWith("/") ? unversioned.href : `${unversioned.href}/`
         const source = new URL(base)
         const index = new URL("index.json", source).href
         const data = yield* HttpClientRequest.get(index).pipe(
           HttpClientRequest.acceptJson,
+          HttpClientRequest.setHeaders(headers),
           http.execute,
           Effect.flatMap(HttpClientResponse.schemaBodyJson(Index)),
           Effect.catch((error) =>
@@ -150,7 +160,7 @@ const layer = Layer.effect(
                   ? undefined
                   : yield* fs.readFileStringSafe(versionFile).pipe(Effect.orElseSucceed(() => undefined))
               if (version === undefined || current === version) {
-                yield* Effect.forEach(files, (file) => download(file.url, file.destination), {
+                yield* Effect.forEach(files, (file) => download(file.url, file.destination, headers), {
                   concurrency: fileConcurrency,
                   discard: true,
                 })
@@ -161,7 +171,7 @@ const layer = Layer.effect(
                 yield* Effect.gen(function* () {
                   const downloaded = yield* Effect.forEach(
                     files,
-                    (file) => download(file.url, path.resolve(staging, file.file)),
+                    (file) => download(file.url, path.resolve(staging, file.file), headers),
                     { concurrency: fileConcurrency },
                   )
                   if (!downloaded.every(Boolean)) return

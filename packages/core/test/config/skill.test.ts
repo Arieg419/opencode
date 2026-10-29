@@ -3,6 +3,7 @@ import path from "path"
 import { describe, expect, test } from "bun:test"
 import { Deferred, Effect, Fiber, Layer, Schema, Stream } from "effect"
 import { Config } from "@opencode/core/config"
+import { ConfigIntegration } from "@opencode/core/config/integration"
 import { Directory, Document, type Entry, Info } from "@opencode/schema/config"
 import { ConfigSkillPlugin } from "@opencode/core/config/plugin/skill"
 import { ConfigCompatibilityPlugin } from "@opencode/core/config/plugin/compatibility"
@@ -12,6 +13,7 @@ import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { Watcher } from "@opencode/core/filesystem/watcher"
 import { Bus } from "@opencode/core/bus"
 import { Credential } from "@opencode/core/credential"
+import { Integration } from "@opencode/core/integration"
 import { FSUtil } from "@opencode/util/fs-util"
 import { Global } from "@opencode/util/global"
 import { LayerNode } from "@opencode/util/effect/layer-node"
@@ -54,9 +56,11 @@ const startEntries = Effect.fnUntraced(function* (
     claude: [],
     agents: [],
   },
+  overrides: Parameters<typeof host>[0] = {},
 ) {
   const service = yield* Skill.Service
   const pluginHost = host({
+    ...overrides,
     skill: {
       list: () => Effect.die("unused skill.list"),
       transform: service.transform,
@@ -280,6 +284,61 @@ describe("ConfigSkillPlugin.Plugin", () => {
 
           expect(review?.description).toBe("Worktree")
           expect(review?.path).toBe(AbsolutePath.make(path.join(worktreeSkills, "review", "SKILL.md")))
+        }),
+      ),
+    ),
+  )
+
+  it.live("pulls Console skill catalogs with the Console connection's credentials, and others without", () =>
+    Effect.acquireDisposable(Effect.promise(() => tmpdir())).pipe(
+      Effect.flatMap((tmp) =>
+        Effect.gen(function* () {
+          const library = "https://console.example.test/console/api/v2/library/skills/#v=abc"
+          const remote = "https://example.test/skills/"
+          const pulls: { url: string; headers?: Record<string, string> }[] = []
+          const discovery = SkillDiscovery.Service.of({
+            pull: (url, headers) => {
+              pulls.push({ url, headers })
+              return Effect.succeed([])
+            },
+          })
+          const integration = host().integration
+          yield* startEntries(
+            [
+              new Document({ type: "document", info: decode({ skills: [remote] }) }),
+              ConfigIntegration.make({
+                integrationID: Integration.ID.make("opencode"),
+                connection: {
+                  type: "credential",
+                  id: Credential.ID.make("cred_console"),
+                  label: "Acme",
+                  method: "key",
+                },
+                origin: "https://console.example.test/console",
+                info: { skills: [library] },
+              }),
+            ],
+            tmp.path,
+            tmp.path,
+            discovery,
+            undefined,
+            {
+              integration: {
+                ...integration,
+                connection: {
+                  ...integration.connection,
+                  resolve: () =>
+                    Effect.succeed(
+                      Credential.Key.make({ type: "key", key: "secret", metadata: { orgID: "org_acme" } }),
+                    ),
+                },
+              },
+            },
+          )
+          expect(pulls).toEqual([
+            { url: remote, headers: undefined },
+            { url: library, headers: { authorization: "Bearer secret", "x-org-id": "org_acme" } },
+          ])
         }),
       ),
     ),
