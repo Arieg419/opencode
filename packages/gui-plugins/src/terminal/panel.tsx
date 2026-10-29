@@ -19,11 +19,7 @@ import { Terminal } from "./terminal"
 import { focusTerminalById } from "./focus"
 import type { TerminalQuoteTarget } from "./quote"
 
-// Sessions whose shown terminals stay mounted, so switching back keeps their screens without a new snapshot.
-const MAX_CACHED_TERMINAL_SESSIONS = 5
-
-type CachedTerminalSurface = {
-  key: string
+type TerminalSurface = {
   session: string
   id: string
   // The connection ended. Like the TUI, a terminal doesn't reconnect; showing it again mounts it anew.
@@ -70,10 +66,7 @@ export default function TerminalPanel(props: {
 
   onCleanup(() => terminal().cancelFocus())
 
-  const [store, setStore] = createStore<{ surfaces: CachedTerminalSurface[]; sessions: string[] }>({
-    surfaces: [],
-    sessions: [],
-  })
+  const [store, setStore] = createStore<{ surfaces: TerminalSurface[] }>({ surfaces: [] })
 
   const newTerminalKeybind = createMemo(() => [...keybinds.keybind("terminal.new")])
 
@@ -113,6 +106,9 @@ export default function TerminalPanel(props: {
         if (!opened() || active() !== request.id || !terminal().focusRequested(request.id)) return
 
         focusTerminalById(request.id)
+        const input = document.getElementById(`terminal-wrapper-${request.id}`)?.querySelector("textarea")
+
+        if (input === document.activeElement) terminal().consumeFocus(request.id)
       }),
   )
 
@@ -128,8 +124,9 @@ export default function TerminalPanel(props: {
     { equals: (previous, next) => previous.size === next.size && [...next].every((id) => previous.has(id)) },
   )
 
-  // Keeps each shown terminal mounted for the sessions shown last. A terminal mounts, and connects, once it is shown,
-  // not while the panel only holds its tab hidden.
+  // Keeps each terminal the session showed mounted, so switching between its tabs keeps their screens. Like the TUI,
+  // another session takes a new snapshot when it shows again. A terminal mounts, and connects, once it is shown, not
+  // while the panel only holds its tab hidden.
   createKeyed(
     () => ({
       session: terminal().key,
@@ -139,29 +136,23 @@ export default function TerminalPanel(props: {
       elsewhere: elsewhere(),
     }),
     (current) => {
-      if (!current.ready) return
+      if (!current.ready) return setStore("surfaces", [])
 
       const ids = new Set(current.terminals.map((info) => info.id))
 
-      const key = current.active ? `${current.session}\0${current.active}` : undefined
-
       const surfaces = store.surfaces.filter(
         (surface) =>
-          !(surface.failed && surface.key !== key) &&
-          (surface.session !== current.session || (ids.has(surface.id) && !current.elsewhere.has(surface.id))),
+          surface.session === current.session &&
+          !(surface.failed && surface.id !== current.active) &&
+          ids.has(surface.id) &&
+          !current.elsewhere.has(surface.id),
       )
 
-      if (current.active && key && !surfaces.some((surface) => surface.key === key)) {
-        surfaces.push({ key, session: current.session, id: current.active, server: terminal().server })
+      if (current.active && !surfaces.some((surface) => surface.id === current.active)) {
+        surfaces.push({ session: current.session, id: current.active, server: terminal().server })
       }
 
-      const sessions = [...store.sessions.filter((item) => item !== current.session), current.session].slice(
-        -MAX_CACHED_TERMINAL_SESSIONS,
-      )
-
-      const keep = new Set(sessions)
-
-      setStore({ surfaces: surfaces.filter((surface) => keep.has(surface.session)), sessions })
+      setStore("surfaces", surfaces)
     },
     {
       equals: (previous, next) =>
@@ -180,6 +171,9 @@ export default function TerminalPanel(props: {
           <div
             id={`terminal-wrapper-${surface.id}`}
             class="absolute inset-0"
+            // Mod+W closes the selected terminal, so the one in use is selected when two panes show terminals.
+            onFocusIn={() => terminal().select(surface.id)}
+            onPointerDown={() => terminal().select(surface.id)}
             classList={{
               hidden: !present() || surface.session !== terminal().key || surface.id !== active(),
             }}
@@ -190,16 +184,15 @@ export default function TerminalPanel(props: {
               ghostty={props.model.ghostty}
               quote={quote}
               autoFocus={terminal().focusRequested(surface.id)}
-              onAutoFocus={() => {
-                focusTerminalById(surface.id)
-                terminal().consumeFocus(surface.id)
-              }}
+              onAutoFocus={() => terminal().consumeFocus(surface.id)}
               onFailure={() => {
                 const shown = opened() && surface.session === terminal().key && surface.id === active()
 
-                if (shown) return setStore("surfaces", (item) => item.key === surface.key, "failed", true)
+                const same = (item: TerminalSurface) => item.session === surface.session && item.id === surface.id
 
-                setStore("surfaces", (list) => list.filter((item) => item.key !== surface.key))
+                if (shown) return setStore("surfaces", same, "failed", true)
+
+                setStore("surfaces", (list) => list.filter((item) => !same(item)))
               }}
               class="!px-[14px]"
             />
@@ -212,7 +205,7 @@ export default function TerminalPanel(props: {
   return (
     <div id="terminal-panel" class="flex flex-col size-full">
       <Show
-        when={terminal().ready() || store.surfaces.length > 0}
+        when={terminal().ready()}
         fallback={
           <div class="flex-1 flex items-center justify-center text-text-weak pointer-events-none">
             {plugin.t("loading")}

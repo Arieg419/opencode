@@ -13,6 +13,9 @@ export async function terminalText(page: Page, screen: Locator) {
   const box = await screen.locator("canvas").boundingBox()
 
   if (!box) throw new Error("The terminal has no canvas")
+
+  // An empty selection copies nothing, so an earlier copy must not pass for the screen.
+  await page.evaluate(() => navigator.clipboard.writeText(""))
   await page.mouse.move(box.x + 1, box.y + 1)
   await page.mouse.down()
   await page.mouse.move(box.x + box.width - 1, box.y + box.height - 1, { steps: 4 })

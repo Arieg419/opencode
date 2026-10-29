@@ -26,6 +26,7 @@ export function TerminalTab(props: {
 
   let input: HTMLInputElement | undefined
   let blurFrame: number | undefined
+  let editFrame: number | undefined
   let editRequested = false
 
   const label = () => terminalTabLabel({ title: props.terminal.title, t: plugin.t })
@@ -72,8 +73,9 @@ export function TerminalTab(props: {
     })
   }
 
+  // Ending the edit unmounts the focused field, whose blur would save again, or save a cancelled title.
   const save = () => {
-    if (!store.blurEnabled) return
+    if (!store.editing || !store.blurEnabled) return
 
     props.rename?.(store.title.trim() || null)
     setStore("editing", false)
@@ -94,8 +96,9 @@ export function TerminalTab(props: {
   }
 
   onCleanup(() => {
-    if (blurFrame === undefined) return
-    cancelAnimationFrame(blurFrame)
+    if (blurFrame !== undefined) cancelAnimationFrame(blurFrame)
+
+    if (editFrame !== undefined) cancelAnimationFrame(editFrame)
   })
 
   return (
@@ -151,7 +154,12 @@ export function TerminalTab(props: {
               if (!editRequested) return
               e.preventDefault()
               editRequested = false
-              requestAnimationFrame(() => edit())
+
+              if (editFrame !== undefined) cancelAnimationFrame(editFrame)
+              editFrame = requestAnimationFrame(() => {
+                editFrame = undefined
+                edit()
+              })
             }}
           >
             <Menu.Item disabled={!props.rename} onSelect={() => (editRequested = true)}>

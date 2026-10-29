@@ -1,4 +1,4 @@
-import { createRoot, getOwner, runWithOwner } from "solid-js"
+import { createRoot, getOwner, runWithOwner, type Owner } from "solid-js"
 import { createStore } from "solid-js/store"
 import { Predicate, Schema } from "effect"
 import { ClientError, isPtyFeatureUnsupportedError, type PersistentPtyInfo } from "@opencode/client"
@@ -43,12 +43,15 @@ export function createTerminalModel(input: {
   tab: (ptyID: string) => string
 }) {
   const owner = getOwner()
-  const [lists, setLists] = input.storage.memory("lists", {
-    initial: { sessions: {} as Record<string, readonly PersistentPtyInfo[]> },
+
+  const [lists, setLists] = input.storage.memory<{ sessions: Record<string, readonly PersistentPtyInfo[]> }>("lists", {
+    initial: { sessions: {} },
   })
+
   const [state, setState] = createStore<{ capabilities: Record<string, boolean>; focus?: FocusRequest }>({
     capabilities: {},
   })
+
   const sessions = new Map<string, SessionRef>()
   const handles = new Map<string, ReturnType<typeof handle>>()
   const selected = new Map<string, Persisted<typeof Selected.Type>>()
@@ -189,12 +192,15 @@ export function createTerminalModel(input: {
       cancelFocus()
     }
 
-    document.addEventListener("focusin", cancelOnOutsideFocus)
-    cleanups.push(() => document.removeEventListener("focusin", cancelOnOutsideFocus))
+    // Capture phase: a tab's rename field stops its focusin from bubbling.
+    document.addEventListener("focusin", cancelOnOutsideFocus, true)
+    cleanups.push(() => document.removeEventListener("focusin", cancelOnOutsideFocus, true))
   }
 
-  const handle = (key: string) => {
-    const session = () => sessions.get(key)!
+  const handle = (initial: SessionRef) => {
+    const key = initial.key
+    // A removed workspace forgets its session, while a component may still hold the handle.
+    const session = () => sessions.get(key) ?? initial
     const all = () => lists.sessions[key] ?? []
     const get = (id: string) => all().find((info) => info.id === id)
 
@@ -227,7 +233,7 @@ export function createTerminalModel(input: {
         const target = session()
         const request = requestFocus(key, undefined, true)
 
-        await settled(target)
+        await settled(target, owner)
 
         // The next default title counts the terminals the server already has.
         if (lists.sessions[key] === undefined) await refresh(target).catch(() => undefined)
@@ -244,10 +250,18 @@ export function createTerminalModel(input: {
             title: defaultTitle(number),
             env: {},
           })
-          .catch((error: unknown) => {
+          .catch((error) => {
             cancelFocus(request)
+
+            // A server without the persistent terminal routes answers with a status its API never declares for them.
+            const outdated =
+              error instanceof ClientError &&
+              error.reason === "UnexpectedStatus" &&
+              Predicate.hasProperty(error.cause, "status") &&
+              (error.cause.status === 404 || error.cause.status === 405)
+
             input.toast.show(
-              outdated(error)
+              outdated
                 ? { variant: "error", title: input.t("create.unsupported") }
                 : {
                     variant: "error",
@@ -293,7 +307,7 @@ export function createTerminalModel(input: {
         await target.server.client.experimental.persistentPty
           .update({ ptyID: id, title })
           .then((info) => replace(key, info))
-          .catch((error: unknown) => {
+          .catch((error) => {
             // A newer title from the server stays.
             if (title !== null && get(id)?.userTitle === title) replace(key, previous)
             input.toast.show(
@@ -332,7 +346,7 @@ export function createTerminalModel(input: {
 
       if (existing) return existing
 
-      const created = handle(session.key)
+      const created = handle(session)
 
       handles.set(session.key, created)
 
@@ -358,6 +372,10 @@ export function createTerminalModel(input: {
         if (session.server.id !== value.server || session.location?.directory !== value.directory) return
 
         setLists((draft) => void delete draft.sessions[key])
+        sessions.delete(key)
+        handles.delete(key)
+        selected.delete(key)
+        sequence.delete(key)
       })
     },
     dispose() {
@@ -382,28 +400,20 @@ export function createTerminalModel(input: {
 }
 
 /** Resolves once the server has created the session. */
-function settled(session: SessionRef) {
+function settled(session: SessionRef, owner: Owner | null) {
   if (!session.pending) return Promise.resolve()
 
   return new Promise<void>((resolve) =>
-    createRoot((dispose) =>
-      createKeyed(
-        () => !session.pending,
-        () => {
-          dispose()
-          resolve()
-        },
-      ),
+    createRoot(
+      (dispose) =>
+        createKeyed(
+          () => !session.pending,
+          () => {
+            dispose()
+            resolve()
+          },
+        ),
+      owner,
     ),
-  )
-}
-
-// A server without the persistent terminal routes answers with a status its API never declares for them.
-function outdated(error: unknown) {
-  return (
-    error instanceof ClientError &&
-    error.reason === "UnexpectedStatus" &&
-    Predicate.hasProperty(error.cause, "status") &&
-    (error.cause.status === 404 || error.cause.status === 405)
   )
 }

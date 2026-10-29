@@ -41,6 +41,41 @@ test("restores a terminal from the server's snapshot after a reload", async ({ p
   ])
 })
 
+test("after a reload, the close shortcut closes the restored terminal", async ({ page }) => {
+  // Elsewhere Ctrl+W reaches the shell, so the terminal hands only macOS's Cmd+W to the app.
+  await page.addInitScript(() => Object.defineProperty(navigator, "platform", { get: () => "MacIntel" }))
+
+  const { persistentPty } = await openSession(page, {
+    name: "Terminals",
+    persistentPty: {
+      initial: [
+        { id: "pty_build", sessionID: SESSION, title: "Build" },
+        { id: "pty_shell", sessionID: SESSION, title: "Shell" },
+      ],
+    },
+  })
+
+  await openSide(page)
+  await showTerminal(page, "Shell", "pty_shell")
+
+  // The restored tab is selected before the server lists the session's terminals.
+  const list = await holdRoute(page, /\/api\/experimental\/session\/ses_terminals\/terminal(\?|$)/, { method: "GET" })
+  await page.reload()
+  await list.arrived
+  list.release()
+
+  await expect(side(page).getByRole("tab", { name: "Shell", exact: true })).toHaveAttribute("aria-selected", "true")
+  // The terminal connects once it has mounted, and only a mounted terminal takes a click.
+  await expect.poll(() => persistentPty.sockets.map((socket) => socket.id)).toEqual(["pty_shell", "pty_shell"])
+  await terminalScreen(page, "pty_shell").click()
+  await expect(terminalScreen(page, "pty_shell").locator("textarea")).toBeFocused()
+  await page.keyboard.press("Meta+W")
+
+  await expect(side(page).getByRole("tab", { name: "Shell", exact: true })).toHaveCount(0)
+  await expect(side(page).getByRole("tab", { name: "Build", exact: true })).toBeVisible()
+  expect(persistentPty.removed).toEqual(["pty_shell"])
+})
+
 test("a terminal another client creates joins the strip without taking it over", async ({ page }) => {
   const { persistentPty } = await openSession(page, { name: "Terminals", persistentPty: {} })
 
@@ -401,6 +436,37 @@ test.describe("narrow screens", () => {
     await expect.poll(() => persistentPty.sockets.map((socket) => socket.id)).toEqual(["pty_first", "pty_second"])
     await expect(field).toBeFocused()
   })
+
+  test("Escape cancels a terminal rename and Enter renames once", async ({ page }) => {
+    const { persistentPty } = await openSession(page, {
+      name: "Terminals",
+      persistentPty: { initial: [{ id: "pty_mobile", sessionID: SESSION, title: "Build" }] },
+    })
+
+    await page.getByRole("tablist", { name: "Session view", exact: true }).getByRole("tab", { name: "More..." }).click()
+    await page
+      .getByRole("dialog", { name: "More options", exact: true })
+      .getByRole("button", { name: "Terminal" })
+      .click()
+
+    const panel = page.locator("#terminal-panel")
+    const field = panel.getByRole("textbox", { name: "Rename", exact: true })
+    await expect.poll(() => persistentPty.sockets.map((socket) => socket.id)).toEqual(["pty_mobile"])
+
+    await panel.getByText("Build", { exact: true }).dblclick()
+    await expect(field).toBeFocused()
+    await field.fill("Cancelled")
+    await field.press("Escape")
+    await expect(field).toHaveCount(0)
+    await expect(panel.getByRole("tab", { name: "Build", exact: true })).toBeVisible()
+
+    await panel.getByText("Build", { exact: true }).dblclick()
+    await expect(field).toBeFocused()
+    await field.fill("Deploy")
+    await field.press("Enter")
+    await expect(panel.getByRole("tab", { name: "Deploy", exact: true })).toBeVisible()
+    expect(persistentPty.updates).toEqual([{ id: "pty_mobile", body: { title: "Deploy" } }])
+  })
 })
 
 // Selecting the tab mounts its terminal, which asks for focus; the rename field keeps it.
@@ -410,11 +476,14 @@ test("double-clicking a terminal tab that is not selected yet starts renaming it
     persistentPty: { initial: [{ id: "pty_named", sessionID: SESSION, title: "Terminal 1" }] },
   })
 
+  // The terminal mounts once ghostty-web loads, which here waits until the rename field has focus.
+  const ghostty = await holdRoute(page, /\/_assets\/ghostty-web-[^/]+\.js$/)
   await openSide(page)
   const strip = side(page).getByRole("tablist")
   const field = strip.getByRole("textbox", { name: "Rename", exact: true })
   await strip.getByText("Terminal 1", { exact: true }).dblclick()
   await expect(field).toBeFocused()
+  ghostty.release()
   // The terminal connects after it mounts and asks for focus.
   await expect.poll(() => persistentPty.sockets.map((socket) => socket.id)).toEqual(["pty_named"])
   await expect(field).toBeFocused()

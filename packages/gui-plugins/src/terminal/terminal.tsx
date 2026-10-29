@@ -302,12 +302,21 @@ export const Terminal = (props: TerminalProps) => {
     const t = term
 
     if (!t) return
-    const focus = () => (t.textarea ? t.textarea.focus({ preventScroll: true }) : t.focus())
+
+    // A tab's rename field keeps focus, before and after a tick; it may take it before the terminal mounts. Other
+    // fields, such as the command palette that created the terminal, give focus to it.
+    const focus = () => {
+      const current = document.activeElement
+
+      if (current instanceof HTMLInputElement && current.closest('[role="tablist"]')) return
+
+      if (t.textarea) return t.textarea.focus({ preventScroll: true })
+
+      t.focus()
+    }
+
     focus()
-    // A field focused meanwhile, such as a tab's rename field, keeps focus.
-    setTimeout(() => {
-      if (!(document.activeElement instanceof HTMLInputElement)) focus()
-    }, 0)
+    setTimeout(focus, 0)
   }
 
   const handlePointerDown = () => {

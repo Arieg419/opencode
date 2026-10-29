@@ -266,10 +266,12 @@ const setup: Plugin.Setup<typeof Terminal> = (ctx) => {
 
       if (terminal.get(input.tab.id)) void terminal.close(input.tab.id)
     },
+    // Before the server lists the session's terminals, a restored tab is selected on trust; `active` honours the
+    // selection once it is listed.
     focus: (input) => {
       const terminal = model.load(input.session)
 
-      if (!terminal.get(input.tab.id)) return
+      if (terminal.ready() && !terminal.get(input.tab.id)) return
 
       terminal.select(input.tab.id)
 
@@ -278,7 +280,7 @@ const setup: Plugin.Setup<typeof Terminal> = (ctx) => {
     enter: (input) => {
       const terminal = model.load(input.session)
 
-      if (terminal.get(input.tab.id)) terminal.requestFocus(input.tab.id)
+      if (!terminal.ready() || terminal.get(input.tab.id)) terminal.requestFocus(input.tab.id)
     },
   })
 }
