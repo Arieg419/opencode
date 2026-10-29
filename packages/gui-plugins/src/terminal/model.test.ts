@@ -9,6 +9,7 @@ const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
 const info = (id: string, title: string, sessionID = "ses_1"): PersistentPtyInfo => ({
   id,
   title,
+  userTitle: null,
   command: "/bin/zsh",
   args: [],
   cwd: "/repo",
