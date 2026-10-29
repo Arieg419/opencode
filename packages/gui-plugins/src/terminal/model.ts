@@ -121,7 +121,9 @@ export function createTerminalModel(input: {
       if (session && state.capabilities[server.id]) refreshQuietly(session)
     }
 
-    const stops = [
+    // Subscriptions end with the owner they start under, and this runs from whichever computation first read the
+    // server, so they belong to the model.
+    const stops = runWithOwner(owner, () => [
       // The event stream opens with server.connected, so this runs for the first connection and every reconnect.
       data.on("server.connected", () => sync(server)),
       data.on("persistent-pty.added", (event) => refreshSession(event.data.sessionID)),
@@ -129,7 +131,7 @@ export function createTerminalModel(input: {
       data.listen((event) => {
         if (event.name === UPDATED && state.capabilities[server.id]) refreshServer(server)
       }),
-    ]
+    ])!
 
     watched.set(server.id, { data, stop: () => stops.forEach((stop) => stop()) })
     sync(server)
