@@ -268,7 +268,7 @@ test("a narrow-screen palette pick keeps the view, and the side region shows the
     fileList: (path) => (path ? [] : [fileNode(fixture.directory, "README.md")]),
     fileContent: (path) => ({ type: "text", content: `contents:${path}` }),
     findFiles: ({ query }) => ("README.md".includes(query) ? [fileNode(fixture.directory, "README.md")] : []),
-    pty: {},
+    persistentPty: {},
   })
   await openStress(page)
   await page.goto(sessionHref(fixture.targetID))

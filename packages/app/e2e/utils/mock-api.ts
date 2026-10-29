@@ -94,8 +94,6 @@ export class MockUnsupported extends Schema.TaggedError<MockUnsupported>()("Mock
 
 const Unsupported = MockUnsupported.pipe(HttpApiSchema.status(501))
 
-const PtyMissing = [MockNotFound.pipe(HttpApiSchema.status(404)), MockPtyNotFound.pipe(HttpApiSchema.status(404))]
-
 const PersistentPtyUnavailable = MockServiceUnavailable.pipe(HttpApiSchema.status(503))
 
 const PersistentPtyMissing = [MockPtyNotFound.pipe(HttpApiSchema.status(404)), PersistentPtyUnavailable]
@@ -271,48 +269,6 @@ const Group = HttpApiGroup.make("mock")
     HttpApiEndpoint.delete("shellRemove", "/api/shell/:id", {
       params: { id: Schema.String },
       success: NoContent,
-    }),
-  )
-  .add(
-    HttpApiEndpoint.get("ptyList", "/api/pty", {
-      success: Json,
-      error: MockNotFound.pipe(HttpApiSchema.status(404)),
-    }),
-  )
-  .add(
-    HttpApiEndpoint.post("ptyCreate", "/api/pty", {
-      payload: Pty.CreateInput,
-      success: Json,
-      error: MockNotFound.pipe(HttpApiSchema.status(404)),
-    }),
-  )
-  .add(
-    HttpApiEndpoint.get("ptyGet", "/api/pty/:ptyID", {
-      params: PtyParams,
-      success: Json,
-      error: PtyMissing,
-    }),
-  )
-  .add(
-    HttpApiEndpoint.put("ptyUpdate", "/api/pty/:ptyID", {
-      params: PtyParams,
-      payload: Pty.UpdateInput,
-      success: Json,
-      error: PtyMissing,
-    }),
-  )
-  .add(
-    HttpApiEndpoint.delete("ptyRemove", "/api/pty/:ptyID", {
-      params: PtyParams,
-      success: NoContent,
-      error: PtyMissing,
-    }),
-  )
-  .add(
-    HttpApiEndpoint.post("ptyConnectToken", "/api/pty/:ptyID/connect-token", {
-      params: PtyParams,
-      success: Json,
-      error: PtyMissing,
     }),
   )
   .add(
