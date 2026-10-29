@@ -19,7 +19,7 @@ import { FileIcon } from "@opencode/ui/file-icon"
 import { Icon } from "@opencode/ui/icon"
 import { IconButton } from "@opencode/ui/icon-button"
 import { Loader } from "@opencode/ui/loader"
-import { observeReducedMotion, prefersReducedMotion } from "@opencode/ui/motion"
+import { prefersReducedMotion } from "@opencode/ui/motion"
 import { ProviderModelIcon } from "@/providers/models/provider-group"
 import { useI18n } from "@opencode/ui/context/i18n"
 import { Button } from "@opencode/ui/button"
@@ -167,7 +167,7 @@ export function ComposerEditor(props: ComposerEditorProps) {
   const dictating = createMemo(() => {
     const status = view.dictation?.status()
 
-    return mode() === "normal" && !view.draftOnly && (status === "recording" || status === "transcribing")
+    return mode() === "normal" && (status === "recording" || status === "transcribing")
   })
 
   const controlsVisible = createMemo(() => mode() === "normal" && !dictating())
@@ -175,7 +175,7 @@ export function ComposerEditor(props: ComposerEditorProps) {
   const buttons = createMemo(() => ({
     opacity: controlsVisible() ? 1 : 0,
     "pointer-events": controlsVisible() ? ("auto" as const) : ("none" as const),
-    transition: "opacity 180ms ease",
+    transition: "opacity 200ms ease",
   }))
 
   createEffect(() => {
@@ -462,12 +462,7 @@ export function ComposerEditor(props: ComposerEditorProps) {
               </div>
             </div>
             <Show when={dictating() ? view.dictation : undefined} keyed>
-              {(dictation) => (
-                <ComposerEditorDictationBar
-                  dictation={dictation}
-                  cancelKeybind={props.exitShellKeybind ?? ["ESC"]}
-                />
-              )}
+              {(dictation) => <ComposerEditorDictationBar dictation={dictation} />}
             </Show>
           </div>
           <div data-slot="composer-actions" class="flex shrink-0 items-center">
@@ -1443,10 +1438,7 @@ function formatDictationTimer(totalSeconds: number) {
   return `${minutes}:${String(seconds).padStart(2, "0")}`
 }
 
-function ComposerEditorDictationBar(props: {
-  dictation: ComposerDictationControl
-  cancelKeybind: string[]
-}) {
+function ComposerEditorDictationBar(props: { dictation: ComposerDictationControl }) {
   const i18n = useI18n()
   const transcribing = () => props.dictation.status() === "transcribing"
 
@@ -1461,7 +1453,8 @@ function ComposerEditorDictationBar(props: {
         value={
           <>
             {i18n.t("ui.promptInput.dictateCancel")}
-            <Keybind keys={props.cancelKeybind} variant="neutral" />
+            {/* The composer's Escape handler cancels, whatever the shell exit key is. */}
+            <Keybind keys={["ESC"]} variant="neutral" />
           </>
         }
       >
@@ -1477,8 +1470,7 @@ function ComposerEditorDictationBar(props: {
           onClick={(event) => {
             event.preventDefault()
             event.stopPropagation()
-
-            if (!transcribing()) props.dictation.onCancel()
+            props.dictation.onCancel()
           }}
         />
       </Tooltip>
@@ -1526,8 +1518,9 @@ function ComposerDictationWaveform(props: {
     let width = 0
     let height = 0
     let dpr = 1
-    let reduced = prefersReducedMotion()
-    let ink = getComputedStyle(element).color || "#888888"
+    // Read once: the canvas lives only while one dictation records.
+    const reduced = prefersReducedMotion()
+    const ink = getComputedStyle(element).color
     let frame: number | undefined
 
     const syncSize = () => {
@@ -1543,32 +1536,14 @@ function ComposerDictationWaveform(props: {
       if (element.height !== targetHeight) element.height = targetHeight
     }
 
-    const syncTheme = () => {
-      ink = getComputedStyle(element).color || "#888888"
-    }
-
     syncSize()
 
-    const resizeObserver = new ResizeObserver(() => {
-      syncSize()
-    })
-
+    const resizeObserver = new ResizeObserver(syncSize)
     resizeObserver.observe(element)
 
-    const themeObserver = new MutationObserver(syncTheme)
-    themeObserver.observe(document.documentElement, {
-      attributes: true,
-      attributeFilter: ["class", "style", "data-theme", "data-color-scheme"],
-    })
-
-    const stopReduced = observeReducedMotion(() => {
-      reduced = prefersReducedMotion()
-    })
-
     const drawBar = (x: number, centerY: number, minHalf: number, maxHalf: number, amplitude: number) => {
-      const clamped = Math.max(0, Math.min(1, amplitude))
-      const half = minHalf + clamped * (maxHalf - minHalf)
-      ctx.globalAlpha = 0.26 + clamped * 0.68
+      const half = minHalf + amplitude * (maxHalf - minHalf)
+      ctx.globalAlpha = 0.26 + amplitude * 0.68
       ctx.beginPath()
       ctx.moveTo(x * dpr, (centerY - half) * dpr)
       ctx.lineTo(x * dpr, (centerY + half) * dpr)
@@ -1578,7 +1553,7 @@ function ComposerDictationWaveform(props: {
     const renderFrame = (now: number) => {
       frame = requestAnimationFrame(renderFrame)
 
-      if (document.hidden || width <= 0 || height <= 0) {
+      if (width <= 0 || height <= 0) {
         lastTime = now
 
         return
@@ -1588,7 +1563,7 @@ function ComposerDictationWaveform(props: {
       lastTime = now
       elapsed += dt
 
-      const target = props.transcribing() ? 0 : Math.max(0, Math.min(1, props.level()))
+      const target = props.transcribing() ? 0 : props.level()
       const rate = target > smoothed ? 28 : 9
       smoothed += (target - smoothed) * (1 - Math.exp(-dt * rate))
 
@@ -1665,50 +1640,25 @@ function ComposerDictationWaveform(props: {
     onCleanup(() => {
       if (frame !== undefined) cancelAnimationFrame(frame)
       resizeObserver.disconnect()
-      themeObserver.disconnect()
-      stopReduced()
     })
   })
 
   return <canvas ref={canvas} aria-hidden="true" class="block size-full text-v2-text-text-base" />
 }
 
-function ComposerEditorDictationButton(props: {
-  dictation: ComposerDictationControl
-  disabled?: boolean
-}) {
+const DICTATION_LABELS = {
+  idle: "ui.promptInput.dictate",
+  starting: "ui.promptInput.dictateStarting",
+  recording: "ui.promptInput.dictateFinish",
+  transcribing: "ui.promptInput.dictateTranscribing",
+  done: "ui.promptInput.dictateDone",
+} as const
+
+function ComposerEditorDictationButton(props: { dictation: ComposerDictationControl; disabled?: boolean }) {
   const i18n = useI18n()
   const status = () => props.dictation.status()
   const busy = () => status() === "starting" || status() === "transcribing"
-  const activeBar = () => status() === "recording" || status() === "transcribing"
-
-  const label = () => {
-    const current = status()
-
-    if (current === "starting") return i18n.t("ui.promptInput.dictateStarting")
-
-    if (current === "recording") return i18n.t("ui.promptInput.dictateFinish")
-
-    if (current === "transcribing") return i18n.t("ui.promptInput.dictateTranscribing")
-
-    if (current === "done") return i18n.t("ui.promptInput.dictateDone")
-
-    return i18n.t("ui.promptInput.dictate")
-  }
-
-  const buttonStyle = () => {
-    if (status() === "done") return { color: "var(--v2-state-fg-success)" }
-
-    return undefined
-  }
-
-  const iconName = () => {
-    const current = status()
-
-    if (current === "recording" || current === "done") return "check"
-
-    return "microphone"
-  }
+  const label = () => i18n.t(DICTATION_LABELS[status()])
 
   return (
     <Tooltip placement="top" inactive={props.disabled} value={label()}>
@@ -1716,20 +1666,25 @@ function ComposerEditorDictationButton(props: {
         data-action="composer-dictate"
         type="button"
         size="large"
-        variant={activeBar() ? "neutral" : "ghost-muted"}
+        variant={status() === "recording" || status() === "transcribing" ? "neutral" : "ghost-muted"}
         disabled={props.disabled}
         aria-label={label()}
         aria-pressed={status() === "recording"}
         aria-busy={busy()}
         class="me-1.5"
-        style={buttonStyle()}
-        icon={busy() ? <Loader class="size-4" /> : <Icon name={iconName()} />}
+        classList={{ "text-v2-state-fg-success": status() === "done" }}
+        icon={
+          busy() ? (
+            <Loader class="size-4" />
+          ) : (
+            <Icon name={status() === "recording" || status() === "done" ? "check" : "microphone"} />
+          )
+        }
         onMouseDown={(event) => event.preventDefault()}
         onClick={(event) => {
           event.preventDefault()
           event.stopPropagation()
-
-          if (!props.disabled && !busy()) props.dictation.onToggle()
+          props.dictation.onToggle()
         }}
       />
     </Tooltip>

@@ -16,15 +16,11 @@ import { bindIpcEvents } from "../ipc-events"
 import { IpcPortHandoff, IpcServerProtocolLive } from "../ipc-transport"
 import { HexDictation } from "./hex"
 
-const originalPlatform = process.platform
-
 const originalSupportDir = process.env.HEX_APPLICATION_SUPPORT_DIR
 
 const ControlPayload = Schema.fromJsonString(Schema.Struct({ command: Schema.String }))
 
 afterEach(() => {
-  Object.defineProperty(process, "platform", { value: originalPlatform })
-
   if (originalSupportDir === undefined) {
     delete process.env.HEX_APPLICATION_SUPPORT_DIR
 
@@ -36,7 +32,6 @@ afterEach(() => {
 
 describe("HexDictation IPC", () => {
   test("drives start, finish, and window-destroy cancel against a running Hex local API", async () => {
-    Object.defineProperty(process, "platform", { value: "darwin" })
     const dir = await mkdtemp(path.join(tmpdir(), "hex-test-"))
     process.env.HEX_APPLICATION_SUPPORT_DIR = dir
 
@@ -174,6 +169,75 @@ describe("HexDictation IPC", () => {
     }
   })
 
+  test("a cancel while Hex is still starting releases the recording it then grants", async () => {
+    const dir = await mkdtemp(path.join(tmpdir(), "hex-race-"))
+    process.env.HEX_APPLICATION_SUPPORT_DIR = dir
+    const paths: string[] = []
+    const requested = Promise.withResolvers<void>()
+    const granted = Promise.withResolvers<void>()
+    const released = Promise.withResolvers<void>()
+
+    const server = Bun.serve({
+      hostname: "127.0.0.1",
+      port: 0,
+      async fetch(req) {
+        const url = new URL(req.url)
+        paths.push(url.pathname)
+
+        if (url.pathname === "/health") return Response.json({ version: "0.0.0-dev-181", apiVersion: "2" })
+
+        if (url.pathname === "/control") {
+          return Response.json({ version: 2, status: "status", permissions: { ready: true } })
+        }
+
+        if (url.pathname === "/dictations") {
+          requested.resolve()
+          await granted.promise
+
+          return Response.json({ id: 3, ownerToken: "owner-3", sampleRate: 16_000 }, { status: 201 })
+        }
+
+        if (url.pathname === "/dictations/3/cancel") released.resolve()
+
+        return Response.json({ status: "cancelled" })
+      },
+    })
+
+    await writeFile(
+      path.join(dir, "local-api.json"),
+      JSON.stringify({ port: server.port, token: "t", apiVersion: "2", pid: process.pid }),
+    )
+
+    const runtime = ManagedRuntime.make(
+      RpcServer.layer(HexRpcs, { disableFatalDefects: true }).pipe(
+        Layer.provide(hexHandlers),
+        Layer.provideMerge(IpcServerProtocolLive),
+        Layer.provideMerge(HexDictation.layer),
+        Layer.provide(Layer.merge(NodeFileSystem.layer, NodePath.layer)),
+      ),
+    )
+
+    try {
+      const handoff = await runtime.runPromise(IpcPortHandoff)
+      const channel = new MessageChannel()
+      handoff.bind(createSender(4).contents, serverPort(channel.port1))
+
+      const start = call(channel.port2, 1, "HexDictationStart", null)
+      await requested.promise
+      await call(channel.port2, 2, "HexDictationCancel", null)
+      granted.resolve()
+
+      expect((await start).exit).toEqual(success({ status: "error", code: "failed" }))
+      await released.promise
+      expect(paths).not.toContain("/dictations/3/levels")
+      channel.port2.close()
+    } finally {
+      await runtime.dispose()
+      await server.stop(true)
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
   test.each([
     {
       name: "opens Hex window when permissions are not ready",
@@ -207,7 +271,6 @@ describe("HexDictation IPC", () => {
       expectWindowShow: false,
     },
   ])("$name", async (scenario) => {
-    Object.defineProperty(process, "platform", { value: "darwin" })
     const dir = await mkdtemp(path.join(tmpdir(), "hex-case-"))
     process.env.HEX_APPLICATION_SUPPORT_DIR = dir
     const controls: string[] = []

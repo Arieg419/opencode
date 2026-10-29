@@ -5,138 +5,80 @@ import type { ComposerDictationControl, ComposerDictationStatus } from "./editor
 
 const DONE_RESET_MS = 1_500
 
-const ELAPSED_TICK_MS = 1_000
+export type HexDictationProblem = "not-installed" | "not-ready" | "busy" | "empty" | "failed"
 
 export function createHexDictation(input: {
   bridge: HexDictationBridge
   insert: (transcript: string) => void
   focus: () => void
-  notify: {
-    notInstalled: () => void
-    notReady: () => void
-    busy: () => void
-    empty: () => void
-    failed: (message?: string) => void
-  }
+  notify: (problem: HexDictationProblem, message?: string) => void
 }): ComposerDictationControl {
-  const [state, setState] = createStore<{
-    status: ComposerDictationStatus
-    level: number
-    elapsedSeconds: number
-  }>({
+  const [state, setState] = createStore<{ status: ComposerDictationStatus; level: number; elapsedSeconds: number }>({
     status: "idle",
     level: 0,
     elapsedSeconds: 0,
   })
 
+  // Each start, finish, and cancel takes a new generation, so a reply to an older one is ignored.
   let generation = 0
   let doneTimer: ReturnType<typeof setTimeout> | undefined
   let elapsedTimer: ReturnType<typeof setInterval> | undefined
   let stopLevels: (() => void) | undefined
 
-  const clearDoneTimer = () => {
-    if (!doneTimer) return
+  const stopRecording = () => {
+    clearInterval(elapsedTimer)
+    stopLevels?.()
+    stopLevels = undefined
+  }
+
+  const settle = (status: ComposerDictationStatus) => {
+    stopRecording()
     clearTimeout(doneTimer)
-    doneTimer = undefined
+    setState("status", status)
   }
 
-  const stopRecordingTelemetry = () => {
-    if (elapsedTimer) {
-      clearInterval(elapsedTimer)
-      elapsedTimer = undefined
-    }
-
-    if (stopLevels) {
-      stopLevels()
-      stopLevels = undefined
-    }
-
-    setState("level", 0)
-  }
-
-  const startRecordingTelemetry = (current: number) => {
-    stopRecordingTelemetry()
-    setState("elapsedSeconds", 0)
-    stopLevels = input.bridge.onLevel?.((level) => {
-      if (current === generation && state.status === "recording") {
-        setState("level", Math.max(0, Math.min(1, level)))
-      }
-    })
-    elapsedTimer = setInterval(() => {
-      if (current !== generation || state.status !== "recording") return
-      setState("elapsedSeconds", (seconds) => seconds + 1)
-    }, ELAPSED_TICK_MS)
-  }
-
-  const resetIdle = () => {
-    stopRecordingTelemetry()
-    batch(() => {
-      setState("status", "idle")
-      setState("elapsedSeconds", 0)
-    })
+  // The bridge rejects only when the desktop could not answer.
+  const fail = (current: number, error: Error) => {
+    if (current !== generation) return
+    settle("idle")
+    input.notify("failed", error.message)
   }
 
   const cancel = () => {
-    clearDoneTimer()
     const active = state.status === "recording" || state.status === "starting"
     generation++
-    resetIdle()
+    settle("idle")
 
     if (active) void input.bridge.cancel().catch(() => undefined)
   }
 
   onCleanup(cancel)
 
-  const toggle = () => {
-    if (state.status === "starting" || state.status === "transcribing") return
-    clearDoneTimer()
+  const finish = () => {
+    const current = ++generation
+    settle("transcribing")
+    void input.bridge
+      .finish()
+      .then((result) => {
+        if (current !== generation) return
 
-    if (state.status === "recording") {
-      const current = ++generation
-      stopRecordingTelemetry()
-      setState("status", "transcribing")
-      void input.bridge
-        .finish()
-        .then((result) => {
-          if (current !== generation) return
+        if (result.status !== "transcribed") {
+          settle("idle")
 
-          if (result.status === "transcribed") {
-            input.insert(result.transcript)
-            batch(() => {
-              setState("status", "done")
-              setState("elapsedSeconds", 0)
-            })
-            doneTimer = setTimeout(() => {
-              doneTimer = undefined
+          return result.status === "empty" ? input.notify("empty") : input.notify("failed", result.message)
+        }
 
-              if (current === generation && state.status === "done") setState("status", "idle")
-            }, DONE_RESET_MS)
+        input.insert(result.transcript)
+        settle("done")
+        doneTimer = setTimeout(() => setState("status", "idle"), DONE_RESET_MS)
+      })
+      .catch((error: Error) => fail(current, error))
+  }
 
-            return
-          }
-
-          resetIdle()
-
-          if (result.status === "empty") {
-            input.notify.empty()
-
-            return
-          }
-
-          input.notify.failed(result.message)
-        })
-        .catch((error) => {
-          if (current !== generation) return
-          resetIdle()
-          input.notify.failed(error instanceof Error ? error.message : String(error))
-        })
-
-      return
-    }
-
+  const start = () => {
     const current = ++generation
     batch(() => {
-      setState("status", "starting")
+      settle("starting")
       setState("level", 0)
       setState("elapsedSeconds", 0)
     })
@@ -145,48 +87,29 @@ export function createHexDictation(input: {
       .then((result) => {
         if (current !== generation) return
 
-        if (result.status === "recording") {
-          setState("status", "recording")
-          startRecordingTelemetry(current)
-          input.focus()
+        if (result.status !== "recording") {
+          settle("idle")
 
-          return
+          return input.notify(result.code, result.message)
         }
 
-        resetIdle()
-
-        if (result.code === "not-installed") {
-          input.notify.notInstalled()
-
-          return
-        }
-
-        if (result.code === "not-ready") {
-          input.notify.notReady()
-
-          return
-        }
-
-        if (result.code === "busy") {
-          input.notify.busy()
-
-          return
-        }
-
-        input.notify.failed(result.message)
+        setState("status", "recording")
+        stopLevels = input.bridge.onLevel((level) => setState("level", Math.max(0, Math.min(1, level))))
+        elapsedTimer = setInterval(() => setState("elapsedSeconds", (seconds) => seconds + 1), 1_000)
+        input.focus()
       })
-      .catch((error) => {
-        if (current !== generation) return
-        resetIdle()
-        input.notify.failed(error instanceof Error ? error.message : String(error))
-      })
+      .catch((error: Error) => fail(current, error))
   }
 
   return {
     status: () => state.status,
     level: () => state.level,
     elapsedSeconds: () => state.elapsedSeconds,
-    onToggle: toggle,
+    onToggle: () => {
+      if (state.status === "recording") return finish()
+
+      if (state.status === "idle" || state.status === "done") start()
+    },
     onCancel: cancel,
   }
 }

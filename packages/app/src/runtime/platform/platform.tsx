@@ -37,7 +37,7 @@ export type HexDictationStartResult =
   | { status: "recording" }
   | {
       status: "error"
-      code: "unsupported" | "not-installed" | "not-ready" | "busy" | "failed"
+      code: "not-installed" | "not-ready" | "busy" | "failed"
       message?: string
     }
 
@@ -54,7 +54,7 @@ export type HexDictationBridge = {
   start(): Promise<HexDictationStartResult>
   finish(): Promise<HexDictationFinishResult>
   cancel(): Promise<void>
-  onLevel?(cb: (level: number) => void): () => void
+  onLevel(cb: (level: number) => void): () => void
 }
 
 type PlatformBase = {

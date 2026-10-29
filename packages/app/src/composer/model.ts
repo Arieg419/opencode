@@ -309,36 +309,31 @@ export function createComposerModel(adapter: ComposerAdapter, options?: { queue?
         bridge: platform.hexDictation,
         insert: (transcript) => controller.insertDictation(transcript),
         focus: () => controller.restoreFocus(),
-        notify: {
-          notInstalled: () =>
-            showToast({
-              variant: "error",
-              title: language.t("prompt.toast.hexNotInstalled.title"),
-              description: language.t("prompt.toast.hexNotInstalled.description"),
-            }),
-          notReady: () =>
-            showToast({
-              variant: "error",
-              title: language.t("prompt.toast.hexNotReady.title"),
-              description: language.t("prompt.toast.hexNotReady.description"),
-            }),
-          busy: () => showToast({ title: language.t("prompt.toast.hexBusy.title") }),
-          empty: () => showToast({ title: language.t("prompt.toast.hexNoSpeech.title") }),
-          failed: (message) =>
-            showToast({
-              variant: "error",
-              title: language.t("prompt.toast.hexFailed.title"),
-              description: message,
-            }),
-        },
+        notify: (problem, message) =>
+          showToast(
+            (
+              {
+                "not-installed": {
+                  variant: "error",
+                  title: language.t("prompt.toast.hexNotInstalled.title"),
+                  description: language.t("prompt.toast.hexNotInstalled.description"),
+                },
+                "not-ready": {
+                  variant: "error",
+                  title: language.t("prompt.toast.hexNotReady.title"),
+                  description: language.t("prompt.toast.hexNotReady.description"),
+                },
+                busy: { title: language.t("prompt.toast.hexBusy.title") },
+                empty: { title: language.t("prompt.toast.hexNoSpeech.title") },
+                failed: { variant: "error", title: language.t("prompt.toast.hexFailed.title"), description: message },
+              } as const
+            )[problem],
+          ),
       })
     : undefined
 
-  createEffect(() => {
-    if (mode() === "shell" && (dictation?.status() === "recording" || dictation?.status() === "starting")) {
-      dictation.onCancel()
-    }
-  })
+  // A transcript must not land in a shell command.
+  createEffect(on(mode, (value) => value === "shell" && dictation?.onCancel()))
 
   const submission = createComposerSubmit({
     adapter,

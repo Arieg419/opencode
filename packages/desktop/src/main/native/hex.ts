@@ -3,7 +3,7 @@ export * as HexDictation from "./hex"
 import { execFile } from "node:child_process"
 import { homedir } from "node:os"
 import util from "node:util"
-import { Clock, Context, Effect, Fiber, FileSystem, Layer, Option, Path, Schema } from "effect"
+import { Context, Effect, Fiber, FileSystem, Layer, Option, Path, Result, Schedule, Schema, Scope } from "effect"
 import type { HexDictationFinishResult, HexDictationStartResult } from "../../shared/ipc-contract"
 
 const execFilePromise = util.promisify(execFile)
@@ -12,64 +12,32 @@ const HEX_BUNDLE_ID = "anomaly.hex"
 
 const HEX_SOURCE = "opencode-desktop"
 
-const LAUNCH_TIMEOUT_MS = 10_000
-
-const WARMUP_TIMEOUT_MS = 5_000
-
-const POLL_INTERVAL = "150 millis"
+const POLL = Schedule.spaced("150 millis")
 
 const HEARTBEAT_INTERVAL = "3 seconds"
 
 const DiscoveryDocument = Schema.fromJsonString(
   Schema.Struct({
-    port: Schema.Number,
-    token: Schema.String,
-    apiVersion: Schema.String,
-    pid: Schema.Number,
-  }),
-)
-
-const HealthResponse = Schema.fromJsonString(
-  Schema.Struct({
-    version: Schema.String,
+    port: Schema.Int.check(Schema.isBetween({ minimum: 1, maximum: 65535 })),
+    token: Schema.NonEmptyString,
     apiVersion: Schema.Literal("2"),
   }),
 )
 
-const DictationStarted = Schema.fromJsonString(
-  Schema.Struct({
-    id: Schema.Number,
-    ownerToken: Schema.String,
-    sampleRate: Schema.Number,
-  }),
-)
+const HealthResponse = Schema.fromJsonString(Schema.Struct({ apiVersion: Schema.Literal("2") }))
 
-const DictationFinished = Schema.fromJsonString(
-  Schema.Struct({
-    transcript: Schema.String,
-    durationMs: Schema.Number,
-  }),
-)
+const DictationStarted = Schema.fromJsonString(Schema.Struct({ id: Schema.Int, ownerToken: Schema.NonEmptyString }))
 
-const DictationLevelEvent = Schema.fromJsonString(
-  Schema.Struct({
-    rmsDb: Schema.Number,
-    peakDb: Schema.Number,
-  }),
-)
+const DictationFinished = Schema.fromJsonString(Schema.Struct({ transcript: Schema.String }))
 
-const RemoteError = Schema.fromJsonString(
-  Schema.Struct({
-    code: Schema.optional(Schema.String),
-  }),
-)
+const DictationLevelEvent = Schema.fromJsonString(Schema.Struct({ rmsDb: Schema.Number, peakDb: Schema.Number }))
+
+const RemoteError = Schema.fromJsonString(Schema.Struct({ code: Schema.optional(Schema.String) }))
 
 const ControlStatusResponse = Schema.fromJsonString(
   Schema.Struct({
     status: Schema.Literal("status"),
-    permissions: Schema.Struct({
-      ready: Schema.Boolean,
-    }),
+    permissions: Schema.Struct({ ready: Schema.Boolean }),
   }),
 )
 
@@ -78,17 +46,18 @@ type Endpoint = {
   token: string
 }
 
-type ActiveRecording = {
+type Lease = {
   endpoint: Endpoint
   id: number
   ownerToken: string
-  heartbeat: Fiber.Fiber<void>
-  levels: Fiber.Fiber<void>
-  abortLevels: AbortController
 }
 
+type Recording = Lease & { fiber: Fiber.Fiber<void> }
+
+type ControlCommand = { command: "status" } | { command: "window-show"; pane?: "models" }
+
 export type Interface = {
-  start(senderID: number, onLevel?: (level: number) => void): Effect.Effect<HexDictationStartResult>
+  start(senderID: number, onLevel: (level: number) => void): Effect.Effect<HexDictationStartResult>
   finish(senderID: number): Effect.Effect<HexDictationFinishResult>
   cancel(senderID: number): Effect.Effect<void>
 }
@@ -100,364 +69,232 @@ export const layer = Layer.effect(
   Effect.gen(function* () {
     const fs = yield* FileSystem.FileSystem
     const path = yield* Path.Path
-    const runFork = Effect.runForkWith(yield* Effect.context())
-    const active = new Map<number, ActiveRecording>()
-
-    const supportDirectory = () =>
-      process.env.HEX_APPLICATION_SUPPORT_DIR || path.join(homedir(), "Library", "Application Support", "hex")
-
-    const exists = (target: string) => fs.exists(target).pipe(Effect.orElseSucceed(() => false))
+    const scope = yield* Scope.Scope
+    const active = new Map<number, Recording>()
+    // The latest start of each window. A cancel or a newer start drops it, so a start still waiting on Hex cancels the
+    // recording it gets instead of keeping it.
+    const starting = new Map<number, object>()
 
     const readEndpoint = Effect.gen(function* () {
-      const file = path.join(supportDirectory(), "local-api.json")
-      const raw = yield* fs.readFileString(file).pipe(Effect.orElseSucceed(() => undefined))
+      const raw = yield* fs
+        .readFileString(
+          path.join(
+            process.env.HEX_APPLICATION_SUPPORT_DIR || path.join(homedir(), "Library", "Application Support", "hex"),
+            "local-api.json",
+          ),
+        )
+        .pipe(Effect.orElseSucceed(() => ""))
 
-      if (!raw) return undefined
-      const parsed = Option.getOrUndefined(Schema.decodeUnknownOption(DiscoveryDocument)(raw))
+      const discovery = decode(DiscoveryDocument, raw)
 
-      if (
-        !parsed ||
-        parsed.apiVersion !== "2" ||
-        !Number.isInteger(parsed.port) ||
-        parsed.port < 1 ||
-        parsed.port > 65535 ||
-        !Number.isInteger(parsed.pid) ||
-        parsed.pid <= 0 ||
-        !parsed.token
-      ) {
-        return undefined
-      }
+      if (!discovery) return undefined
+      const endpoint = { url: `http://127.0.0.1:${discovery.port}`, token: discovery.token }
+      const health = yield* request(endpoint, "/health", { method: "GET", timeout: 500 })
 
-      const url = `http://127.0.0.1:${parsed.port}`
-
-      const healthy = yield* Effect.tryPromise(async () => {
-        const response = await fetch(`${url}/health`, {
-          headers: { authorization: `Bearer ${parsed.token}` },
-          signal: AbortSignal.timeout(500),
-        })
-
-        if (!response.ok) return false
-        const text = await response.text()
-
-        return Option.isSome(Schema.decodeUnknownOption(HealthResponse)(text))
-      }).pipe(Effect.orElseSucceed(() => false))
-
-      return healthy ? ({ url, token: parsed.token } satisfies Endpoint) : undefined
+      return health?.ok && decode(HealthResponse, health.body) ? endpoint : undefined
     })
 
-    const findInstalledApp = Effect.gen(function* () {
-      const home = process.env.HOME || homedir()
-      const candidates = ["/Applications/Hex.app", ...(home ? [path.join(home, "Applications", "Hex.app")] : [])]
-
-      for (const candidate of candidates) {
-        if (yield* exists(candidate)) return candidate
-      }
-
-      const spotlight = yield* Effect.tryPromise(() =>
-        execFilePromise("/usr/bin/mdfind", [`kMDItemCFBundleIdentifier == "${HEX_BUNDLE_ID}"`]),
-      ).pipe(Effect.orElseSucceed(() => undefined))
-
-      if (!spotlight) return undefined
-
-      for (const line of spotlight.stdout
-        .toString()
-        .split(/\r?\n/)
-        .map((entry) => entry.trim())
-        .filter((entry) => entry.endsWith(".app"))) {
-        if (yield* exists(line)) return line
-      }
-
-      return undefined
-    })
-
+    // Starts Hex in the background when it is not running, then waits for its local API.
     const ensureRunning = Effect.gen(function* () {
       const running = yield* readEndpoint
 
-      if (running) return { ok: true as const, endpoint: running }
-      const bundle = yield* findInstalledApp
+      if (running) return running
 
-      if (!bundle) return { ok: false as const, code: "not-installed" as const }
-
-      const launched = yield* Effect.tryPromise(() => execFilePromise("/usr/bin/open", ["-g", bundle])).pipe(
+      const launched = yield* Effect.tryPromise(() => execFilePromise("/usr/bin/open", ["-g", "-b", HEX_BUNDLE_ID])).pipe(
         Effect.as(true),
         Effect.orElseSucceed(() => false),
       )
 
-      if (!launched) return { ok: false as const, code: "failed" as const }
-      const startedAt = yield* Clock.currentTimeMillis
+      if (!launched) return yield* Effect.fail("not-installed" as const)
 
-      while ((yield* Clock.currentTimeMillis) - startedAt < LAUNCH_TIMEOUT_MS) {
-        const endpoint = yield* readEndpoint
-
-        if (endpoint) return { ok: true as const, endpoint }
-        yield* Effect.sleep(POLL_INTERVAL)
-      }
-
-      return { ok: false as const, code: "not-ready" as const }
+      return yield* readEndpoint.pipe(
+        Effect.flatMap((endpoint) => (endpoint ? Effect.succeed(endpoint) : Effect.fail("not-ready" as const))),
+        Effect.retry(POLL.pipe(Schedule.upTo({ duration: "10 seconds" }))),
+      )
     })
 
-    const checkPermissionsReady = (endpoint: Endpoint) =>
-      Effect.tryPromise(async () => {
-        const response = await fetch(`${endpoint.url}/control`, {
-          method: "POST",
-          headers: {
-            authorization: `Bearer ${endpoint.token}`,
-            "content-type": "application/json",
-          },
-          body: JSON.stringify({ version: 2, command: "status" }),
-          signal: AbortSignal.timeout(1_500),
+    const control = (endpoint: Endpoint, command: ControlCommand) =>
+      request(endpoint, "/control", { json: { version: 2, ...command }, timeout: 1_500 })
+
+    const release = (lease: Lease) =>
+      request(lease.endpoint, `/dictations/${lease.id}/cancel`, { owner: lease.ownerToken, timeout: 2_000 })
+
+    const heartbeat = (lease: Lease) =>
+      Effect.sleep(HEARTBEAT_INTERVAL).pipe(
+        Effect.andThen(request(lease.endpoint, `/dictations/${lease.id}/heartbeat`, { owner: lease.ownerToken, timeout: 2_000 })),
+        // Hex no longer knows the lease.
+        Effect.repeat({ until: (response) => response?.status === 401 || response?.status === 404 || response?.status === 409 }),
+      )
+
+    const levels = (lease: Lease, onLevel: (level: number) => void) =>
+      Effect.tryPromise(async (signal) => {
+        const response = await fetch(`${lease.endpoint.url}/dictations/${lease.id}/levels`, {
+          headers: headers(lease.endpoint, lease.ownerToken),
+          signal,
         })
 
-        if (!response.ok) return true
-        const status = Option.getOrUndefined(Schema.decodeUnknownOption(ControlStatusResponse)(await response.text()))
+        if (!response.ok || !response.body) return
+        const reader = response.body.pipeThrough(new TextDecoderStream()).getReader()
+        let buffer = ""
 
-        return status ? status.permissions.ready : true
-      }).pipe(Effect.orElseSucceed(() => true))
+        while (true) {
+          const chunk = await reader.read()
 
-    const showHexWindow = (endpoint: Endpoint, pane?: string) =>
-      Effect.tryPromise(() =>
-        fetch(`${endpoint.url}/control`, {
-          method: "POST",
-          headers: {
-            authorization: `Bearer ${endpoint.token}`,
-            "content-type": "application/json",
-          },
-          body: JSON.stringify(pane ? { version: 2, command: "window-show", pane } : { version: 2, command: "window-show" }),
-          signal: AbortSignal.timeout(1_500),
-        }),
-      ).pipe(Effect.ignore)
+          if (chunk.done) return
+          const lines = (buffer + chunk.value).split(/\r?\n/)
+          buffer = lines.pop() ?? ""
+          lines
+            .flatMap((line) => (line.startsWith("data:") ? [decode(DictationLevelEvent, line.slice(5).trim())] : []))
+            .forEach((event) => event && onLevel(normalizeLevel(event.rmsDb, event.peakDb)))
+        }
+      }).pipe(Effect.ignore)
 
-    const takeActive = (senderID: number) =>
-      Effect.gen(function* () {
-        const current = active.get(senderID)
+    const take = Effect.fnUntraced(function* (senderID: number) {
+      const recording = active.get(senderID)
 
-        if (!current) return undefined
-        active.delete(senderID)
-        current.abortLevels.abort()
-        yield* Fiber.interrupt(current.heartbeat)
-        yield* Fiber.interrupt(current.levels)
+      if (!recording) return undefined
+      active.delete(senderID)
+      yield* Fiber.interrupt(recording.fiber)
 
-        return current
-      })
+      return recording
+    })
 
-    const cancelActive = (recording: ActiveRecording) =>
-      Effect.tryPromise(() =>
-        fetch(`${recording.endpoint.url}/dictations/${recording.id}/cancel`, {
-          method: "POST",
-          headers: {
-            authorization: `Bearer ${recording.endpoint.token}`,
-            "x-hex-dictation-token": recording.ownerToken,
-          },
-          signal: AbortSignal.timeout(2_000),
-        }),
-      ).pipe(Effect.ignore)
+    const stop = Effect.fnUntraced(function* (senderID: number) {
+      const recording = yield* take(senderID)
 
-    const startHeartbeat = (endpoint: Endpoint, id: number, ownerToken: string) => {
-      const loop: Effect.Effect<void> = Effect.sleep(HEARTBEAT_INTERVAL).pipe(
-        Effect.andThen(
-          Effect.tryPromise(async () => {
-            const response = await fetch(`${endpoint.url}/dictations/${id}/heartbeat`, {
-              method: "POST",
-              headers: {
-                authorization: `Bearer ${endpoint.token}`,
-                "x-hex-dictation-token": ownerToken,
-              },
-              signal: AbortSignal.timeout(2_000),
-            })
-
-            return response.status
-          }).pipe(Effect.orElseSucceed(() => 0)),
-        ),
-        Effect.flatMap((status) =>
-          status === 401 || status === 404 || status === 409 ? Effect.void : loop,
-        ),
-      )
-
-      return runFork(loop)
-    }
-
-    const startLevelStream = (
-      endpoint: Endpoint,
-      id: number,
-      ownerToken: string,
-      signal: AbortSignal,
-      onLevel?: (level: number) => void,
-    ) => {
-      if (!onLevel) return runFork(Effect.void)
-
-      return runFork(
-        Effect.tryPromise(async () => {
-          const response = await fetch(`${endpoint.url}/dictations/${id}/levels`, {
-            headers: {
-              authorization: `Bearer ${endpoint.token}`,
-              "x-hex-dictation-token": ownerToken,
-            },
-            signal,
-          })
-
-          if (!response.ok || !response.body) return
-          const reader = response.body.pipeThrough(new TextDecoderStream()).getReader()
-          let buffer = ""
-
-          while (!signal.aborted) {
-            const chunk = await reader.read()
-
-            if (chunk.done) return
-            buffer += chunk.value
-            const lines = buffer.split(/\r?\n/)
-            buffer = lines.pop() ?? ""
-
-            for (const line of lines) {
-              if (!line.startsWith("data:")) continue
-              const raw = line.slice(5).trim()
-
-              if (!raw) continue
-              const parsed = Option.getOrUndefined(Schema.decodeUnknownOption(DictationLevelEvent)(raw))
-
-              if (parsed) onLevel(normalizeLevel(parsed.rmsDb, parsed.peakDb))
-            }
-          }
-        }).pipe(Effect.ignore),
-      )
-    }
+      if (recording) yield* release(recording)
+    })
 
     yield* Effect.addFinalizer(() =>
-      Effect.gen(function* () {
-        const entries = [...active.values()]
-        active.clear()
-        yield* Effect.forEach(
-          entries,
-          (entry) => {
-            entry.abortLevels.abort()
-
-            return Fiber.interrupt(entry.heartbeat).pipe(
-              Effect.andThen(Fiber.interrupt(entry.levels)),
-              Effect.andThen(cancelActive(entry)),
-            )
-          },
-          { concurrency: "unbounded", discard: true },
-        )
-      }),
+      Effect.forEach([...active.keys()], stop, { concurrency: "unbounded", discard: true }),
     )
 
     return Service.of({
-      start: Effect.fn("HexDictation.start")(function* (senderID: number, onLevel?: (level: number) => void) {
-        if (process.platform !== "darwin") return { status: "error", code: "unsupported" }
-        const previous = yield* takeActive(senderID)
+      start: Effect.fn("HexDictation.start")(function* (senderID: number, onLevel: (level: number) => void) {
+        yield* stop(senderID)
+        const ticket = {}
+        starting.set(senderID, ticket)
+        const running = yield* Effect.result(ensureRunning)
 
-        if (previous) yield* cancelActive(previous)
-        const ensured = yield* ensureRunning
+        if (Result.isFailure(running)) return { status: "error", code: running.failure }
+        const endpoint = running.success
+        const status = yield* control(endpoint, { command: "status" })
+        const permissions = status?.ok ? decode(ControlStatusResponse, status.body) : undefined
 
-        if (!ensured.ok) return { status: "error", code: ensured.code }
-        const endpoint = ensured.endpoint
-        const ready = yield* checkPermissionsReady(endpoint)
-
-        if (!ready) {
-          yield* showHexWindow(endpoint)
+        if (permissions && !permissions.permissions.ready) {
+          yield* control(endpoint, { command: "window-show" })
 
           return { status: "error", code: "not-ready" }
         }
 
-        const startedAt = yield* Clock.currentTimeMillis
+        // Hex answers 503 while it is still warming up after launch.
+        const created = yield* request(endpoint, "/dictations", { json: { source: HEX_SOURCE }, timeout: 3_000 }).pipe(
+          Effect.flatMap((response) => (response?.status === 503 ? Effect.fail(response) : Effect.succeed(response))),
+          Effect.retry(POLL.pipe(Schedule.upTo({ duration: "5 seconds" }))),
+          Effect.catch(Effect.succeed),
+        )
 
-        while (true) {
-          const attempt = yield* Effect.tryPromise(async () => {
-            const response = await fetch(`${endpoint.url}/dictations`, {
-              method: "POST",
-              headers: {
-                authorization: `Bearer ${endpoint.token}`,
-                "content-type": "application/json",
-              },
-              body: JSON.stringify({ source: HEX_SOURCE }),
-              signal: AbortSignal.timeout(3_000),
-            })
+        if (!created) return { status: "error", code: "failed" }
 
-            return { status: response.status, ok: response.ok, body: await response.text() }
-          }).pipe(Effect.orElseSucceed(() => undefined))
+        if (created.ok) {
+          const started = decode(DictationStarted, created.body)
 
-          if (!attempt) return { status: "error", code: "failed" }
+          if (!started) return { status: "error", code: "failed" }
+          const lease = { endpoint, id: started.id, ownerToken: started.ownerToken }
 
-          if (attempt.ok) {
-            const started = Option.getOrUndefined(Schema.decodeUnknownOption(DictationStarted)(attempt.body))
+          if (starting.get(senderID) !== ticket) {
+            yield* release(lease)
 
-            if (!started || !Number.isInteger(started.id) || !started.ownerToken) {
-              return { status: "error", code: "failed" }
-            }
-
-            const abortLevels = new AbortController()
-            active.set(senderID, {
-              endpoint,
-              id: started.id,
-              ownerToken: started.ownerToken,
-              heartbeat: startHeartbeat(endpoint, started.id, started.ownerToken),
-              levels: startLevelStream(endpoint, started.id, started.ownerToken, abortLevels.signal, onLevel),
-              abortLevels,
-            })
-
-            return { status: "recording" }
+            return { status: "error", code: "failed" }
           }
 
-          const code = Option.getOrUndefined(Schema.decodeUnknownOption(RemoteError)(attempt.body))?.code
+          starting.delete(senderID)
+          active.set(senderID, {
+            ...lease,
+            fiber: yield* Effect.all([heartbeat(lease), levels(lease, onLevel)], {
+              concurrency: "unbounded",
+              discard: true,
+            }).pipe(Effect.forkIn(scope)),
+          })
 
-          if (attempt.status === 503 && (yield* Clock.currentTimeMillis) - startedAt < WARMUP_TIMEOUT_MS) {
-            yield* Effect.sleep(POLL_INTERVAL)
-            continue
-          }
-
-          if (code === "dictation-busy") return { status: "error", code: "busy" }
-
-          if (code === "model-not-ready") {
-            yield* showHexWindow(endpoint, "models")
-
-            return { status: "error", code: "not-ready" }
-          }
-
-          return { status: "error", code: "failed", message: code }
+          return { status: "recording" }
         }
+
+        const code = decode(RemoteError, created.body)?.code
+
+        if (code === "dictation-busy") return { status: "error", code: "busy" }
+
+        if (code === "model-not-ready") {
+          yield* control(endpoint, { command: "window-show", pane: "models" })
+
+          return { status: "error", code: "not-ready" }
+        }
+
+        return { status: "error", code: "failed", message: code }
       }),
       finish: Effect.fn("HexDictation.finish")(function* (senderID: number) {
-        const recording = yield* takeActive(senderID)
+        const recording = yield* take(senderID)
 
         if (!recording) return { status: "error", code: "not-active" }
 
-        const response = yield* Effect.tryPromise(async () => {
-          const reply = await fetch(`${recording.endpoint.url}/dictations/${recording.id}/finish`, {
-            method: "POST",
-            headers: {
-              authorization: `Bearer ${recording.endpoint.token}`,
-              "x-hex-dictation-token": recording.ownerToken,
-            },
-            signal: AbortSignal.timeout(125_000),
-          })
-
-          return { ok: reply.ok, body: await reply.text() }
-        }).pipe(Effect.orElseSucceed(() => undefined))
+        const response = yield* request(recording.endpoint, `/dictations/${recording.id}/finish`, {
+          owner: recording.ownerToken,
+          timeout: 125_000,
+        })
 
         if (!response) return { status: "error", code: "failed" }
 
         if (response.ok) {
-          const decoded = Option.getOrUndefined(Schema.decodeUnknownOption(DictationFinished)(response.body))
+          const transcript = decode(DictationFinished, response.body)?.transcript.trim()
 
-          if (!decoded) return { status: "error", code: "failed" }
-          const transcript = decoded.transcript.trim()
+          if (transcript === undefined) return { status: "error", code: "failed" }
 
           return transcript ? { status: "transcribed", transcript } : { status: "empty" }
         }
 
-        const code = Option.getOrUndefined(Schema.decodeUnknownOption(RemoteError)(response.body))?.code
+        const code = decode(RemoteError, response.body)?.code
 
         if (code === "capture-discarded") return { status: "empty" }
 
         return { status: "error", code: "failed", message: code }
       }),
       cancel: Effect.fn("HexDictation.cancel")(function* (senderID: number) {
-        const recording = yield* takeActive(senderID)
-
-        if (recording) yield* cancelActive(recording)
+        starting.delete(senderID)
+        yield* stop(senderID)
       }),
     })
   }),
 )
+
+/** One local API call; undefined when Hex did not answer. */
+function request(
+  endpoint: Endpoint,
+  path: string,
+  options: { method?: "GET" | "POST"; owner?: string; json?: object; timeout: number },
+) {
+  return Effect.tryPromise(async (signal) => {
+    const response = await fetch(`${endpoint.url}${path}`, {
+      method: options.method ?? "POST",
+      headers: options.json
+        ? { ...headers(endpoint, options.owner), "content-type": "application/json" }
+        : headers(endpoint, options.owner),
+      body: options.json && JSON.stringify(options.json),
+      signal: AbortSignal.any([signal, AbortSignal.timeout(options.timeout)]),
+    })
+
+    return { status: response.status, ok: response.ok, body: await response.text() }
+  }).pipe(Effect.orElseSucceed(() => undefined))
+}
+
+function headers(endpoint: Endpoint, owner?: string): Record<string, string> {
+  return owner
+    ? { authorization: `Bearer ${endpoint.token}`, "x-hex-dictation-token": owner }
+    : { authorization: `Bearer ${endpoint.token}` }
+}
+
+function decode<A>(schema: Schema.Codec<A, string>, body: string) {
+  return Option.getOrUndefined(Schema.decodeUnknownOption(schema)(body))
+}
 
 function normalizeLevel(rmsDb: number, peakDb: number) {
   if (!Number.isFinite(rmsDb) || !Number.isFinite(peakDb)) return 0
