@@ -23,7 +23,7 @@ import { Global } from "@opencode/util/global"
 import { Effect, Layer, Schedule, Stream } from "effect"
 import { testEffect } from "./lib/effect"
 import { permissionLayer } from "./lib/permission"
-import { executeTool, toolDefinitions, toolIdentity } from "./lib/tool"
+import { codeModeListings, executeTool, toolDefinitions, toolIdentity } from "./lib/tool"
 import { makePluginTestLayer } from "./plugin/fixture"
 
 const PNG = "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg=="
@@ -104,12 +104,17 @@ const setup = (providerID = "test") =>
       model: Model.Ref.make({ providerID: Provider.ID.make(providerID), id: Model.ID.make("chat") }),
     })
     const registry = yield* Tool.Service
+    // With Code Mode denied the tool is offered directly, which exposes its full result to assertions.
     const run = (input: Record<string, unknown>) =>
-      executeTool(registry, {
-        sessionID: session.id,
-        ...toolIdentity,
-        call: { type: "tool-call", id: `call-${JSON.stringify(input)}`, name: ImageGenerateTool.name, input },
-      })
+      executeTool(
+        registry,
+        {
+          sessionID: session.id,
+          ...toolIdentity,
+          call: { type: "tool-call", id: `call-${JSON.stringify(input)}`, name: ImageGenerateTool.name, input },
+        },
+        [{ action: "execute", resource: "*", effect: "deny" }],
+      )
     // Completion notices arrive as synthetic messages posted by the background job.
     const notices: { text: string; metadata?: Record<string, unknown> }[] = []
     const bus = yield* Bus.Service
@@ -149,9 +154,14 @@ const configuredModel = (providerID: string, model: string) => ({
   model: Model.ID.make(model),
 })
 
-const registered = Tool.Service.use((registry) => toolDefinitions(registry)).pipe(
-  Effect.map((tools) => tools.some((tool) => tool.name === ImageGenerateTool.name)),
+const listed = Tool.Service.use((registry) => registry.snapshot()).pipe(
+  Effect.map((snapshot) =>
+    snapshot.codeModeCatalog
+      ? codeModeListings(snapshot.codeModeCatalog).filter((tool) => tool.path === "image.generate")
+      : [],
+  ),
 )
+const registered = listed.pipe(Effect.map((tools) => tools.length > 0))
 // Catalog and config changes reach the tool through events, so wait for them instead of a fixed delay.
 const until = (expected: boolean) =>
   registered.pipe(
@@ -170,9 +180,35 @@ describe("image_generate", () => {
       expect(yield* registered).toBe(false)
       yield* imageModel("test", "painter")
       expect(yield* until(true)).toBe(true)
+      // A Code Mode tool that isn't pinned, so it isn't offered directly next to `execute`.
+      expect((yield* listed)[0]).not.toMatchObject({ pinned: true })
+      expect((yield* toolDefinitions(yield* Tool.Service)).map((tool) => tool.name)).not.toContain(
+        ImageGenerateTool.name,
+      )
       const catalog = yield* Provider.Service
       yield* catalog.transform((editor) => editor.models.remove(Provider.ID.make("test"), Model.ID.make("painter")))
       expect(yield* until(false)).toBe(false)
+    }),
+  )
+
+  it.live("runs from Code Mode as tools.image.generate", () =>
+    Effect.gen(function* () {
+      yield* imageModel("test", "painter")
+      const { session } = yield* setup()
+      yield* until(true)
+      const result = yield* executeTool(yield* Tool.Service, {
+        sessionID: session.id,
+        ...toolIdentity,
+        call: {
+          type: "tool-call",
+          id: "call-codemode",
+          name: "execute",
+          input: { code: 'return await tools.image.generate({ prompt: "a cat" })' },
+        },
+      })
+      const output = JSON.parse(text(result) ?? "") as { path: string; model: string }
+      expect(output.model).toBe("test/painter")
+      expect(path.dirname(output.path)).toBe(path.join((yield* Global.Service).tmp, "images", session.id))
     }),
   )
 

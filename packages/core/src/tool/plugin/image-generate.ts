@@ -21,7 +21,10 @@ import { SessionMessage } from "../../session/message.js"
 import { SessionSchema } from "../../session/schema.js"
 import { collectBoundedResponseBody } from "../http-body.js"
 
+// Registered as `generate` in the `image` namespace: `tools.image.generate` in code mode. Its effective name, which
+// permissions and jobs use, stays `image_generate`.
 export const name = "image_generate"
+export const namespace = "image"
 export const MAX_INPUT_BYTES = 20 * 1024 * 1024
 const DOWNLOAD_TIMEOUT = Duration.seconds(30)
 const GENERATE_TIMEOUT = Duration.minutes(30)
@@ -231,9 +234,13 @@ export const Plugin = {
     yield* ctx.tool
       .transform((editor) => {
         if (!enabled) return
+        editor.namespace({
+          name: namespace,
+          description: "Generate and edit images with the image models of your connected providers.",
+        })
         editor.add({
-          name,
-          options: { codemode: false },
+          name: "generate",
+          options: { namespace, codemode: true },
           description,
           input: Input,
           output: Output,
