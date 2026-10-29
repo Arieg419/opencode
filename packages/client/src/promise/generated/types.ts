@@ -2396,7 +2396,7 @@ export type ConfigEntry =
         worktree?: ConfigWorktree
         warming?: boolean | { prompt?: string; interval?: string; duration?: string }
         network?: {
-          client_certificates?: Array<{ hosts: Array<string>; cert: string; key: string; passphrase?: string }>
+          client_certificates?: Array<{ hosts: Array<string>; cert: string; key: string; passphrase_file?: string }>
         }
         providers?: {
           [x: string]: {
