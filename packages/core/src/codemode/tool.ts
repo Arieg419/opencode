@@ -25,6 +25,7 @@ const ExecuteCall = Schema.Struct({
   tool: Schema.String,
   status: Schema.Literals(["running", "completed", "error"]),
   input: Schema.optionalKey(Schema.Record(Schema.String, Schema.Json)),
+  error: Schema.optionalKey(Schema.String),
 })
 
 type ExecuteCall = typeof ExecuteCall.Type
@@ -164,7 +165,11 @@ function progressHooks(record: (update: (items: Array<ExecuteCall>) => Array<Exe
     if (index === undefined) return Effect.void
     return record((items) => {
       const next = [...items]
-      next[index] = { ...items[index], status: result.status === "success" ? "completed" : "error" }
+      next[index] = {
+        ...items[index],
+        status: result.status === "success" ? "completed" : "error",
+        ...callError(result),
+      }
       return next
     })
   }
@@ -185,6 +190,17 @@ function progressHooks(record: (update: (items: Array<ExecuteCall>) => Array<Exe
     },
     "extension.after": settle,
   } satisfies CodeMode.Hooks
+}
+
+const MAX_CALL_ERROR = 1_000
+
+// A program that catches a failure may never return or log it, so its row keeps the message the program saw.
+// Interrupted calls carry no message.
+function callError(result: CodeMode.CallResult) {
+  if (result.status !== "failure") return {}
+  const message = result.error instanceof globalThis.Error ? result.error.message : String(result.error)
+  if (message === "") return {}
+  return { error: message.length > MAX_CALL_ERROR ? `${message.slice(0, MAX_CALL_ERROR)}…` : message }
 }
 
 export const catalog = (inventory: Inventory) => {

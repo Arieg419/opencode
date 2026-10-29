@@ -155,6 +155,24 @@ test("execute supports callable namespace tools", async () => {
   expect(result.content).toEqual([{ type: "text", text: '[\n  "admin",\n  "created"\n]' }])
 })
 
+test("execute keeps a caught call failure's message on its row", async () => {
+  const quota: Info = {
+    name: "quota",
+    description: "Always over quota",
+    input: Schema.Struct({}),
+    execute: () => Effect.fail(new Tool.Error({ message: "quota exceeded" })),
+  }
+  const result = await Effect.runPromise(
+    createCodeMode(new Map([["quota", quota]])).execute(
+      { code: 'try { await tools.quota({}) } catch (error) { return "caught: " + error.message }' },
+      context,
+    ),
+  )
+
+  expect(result.content).toEqual([{ type: "text", text: "caught: quota exceeded" }])
+  expect(result.metadata).toEqual({ toolCalls: [{ tool: "quota", status: "error", error: "quota exceeded" }] })
+})
+
 test("executions share the prepared runtime of an inventory while keeping per-call state", async () => {
   let conversions = 0
   const echo: Info = {

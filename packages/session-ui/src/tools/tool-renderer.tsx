@@ -1995,7 +1995,7 @@ ToolRegistry.register({
       >
         <div data-component="execute-tool-calls">
           <Index each={calls()}>
-            {(call, index) => <ExecuteCallRow call={call()} error={index === owner() ? error() : undefined} />}
+            {(call, index) => <ExecuteCallRow call={call()} error={(index === owner() && error()) || call().error} />}
           </Index>
           <Show when={owner() === -1 && error()}>{(text) => <ExecuteCallRow error={text()} />}</Show>
           <Show when={output()}>{(value) => <ExecuteOutputRow output={value()} />}</Show>

@@ -3352,7 +3352,7 @@ function ExecuteCallView(props: { call: Accessor<ExecuteCall> }) {
   const [expanded, setExpanded] = createSignal(false)
   const [hover, setHover] = createSignal(false)
   const input = createMemo(() => Object.entries(props.call().input ?? {}))
-  const expandable = createMemo(() => input().length > 0)
+  const expandable = createMemo(() => input().length > 0 || !!props.call().error)
   const expandedColor = createMemo(() => theme.decrease(theme.text.muted))
   const color = createMemo(() => {
     if (props.call().status === "error") return theme.text.feedback.error.base
@@ -3392,6 +3392,13 @@ function ExecuteCallView(props: { call: Accessor<ExecuteCall> }) {
               </box>
             )}
           </For>
+          <Show when={props.call().error}>
+            {(error) => (
+              <text wrapMode="word" fg={theme.text.feedback.error.base}>
+                {error()}
+              </text>
+            )}
+          </Show>
         </box>
       </Show>
     </box>
