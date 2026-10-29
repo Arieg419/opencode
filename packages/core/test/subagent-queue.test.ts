@@ -23,6 +23,7 @@ import { SessionEvent } from "@opencode/core/session/event"
 import { SessionExecution } from "@opencode/core/session/execution"
 import { SessionRestart } from "@opencode/core/session/execution/restart"
 import { SessionMessage } from "@opencode/core/session/message"
+import { SessionStore } from "@opencode/core/session/store"
 import { SessionRunner } from "@opencode/core/session/runner/index"
 import { SessionRunnerLLM } from "@opencode/core/session/runner/llm"
 import { SubagentJob } from "@opencode/core/session/subagent-job"
@@ -125,6 +126,7 @@ const it = testEffect(
       SubagentQueue.node,
       KV.node,
       Global.node,
+      SessionStore.node,
     ]),
     [
       SessionRunnerLLM.node.replace(runnerNode),
@@ -387,17 +389,11 @@ describe("SubagentQueue", () => {
     Effect.gen(function* () {
       const { sessions, root } = yield* setup({ subagent_concurrency: 1 })
       const kv = yield* KV.Service
-      const bus = yield* Bus.Service
       const children = yield* Effect.forEach([1, 2], (n) =>
         sessions.create({ parentID: root.id, title: `recovered ${n}`, agent: Agent.ID.make("reviewer") }),
       )
-      // The first child had already run before the restart; the second never started.
-      yield* bus.publish(SessionEvent.Synthetic, {
-        sessionID: children[0]!.id,
-        text: "earlier turn",
-        description: "earlier turn",
-        metadata: {},
-      })
+      // The first child was mid-turn at the restart; the second was still waiting for a slot.
+      yield* (yield* SessionStore.Service).claim(children[0]!.id)
       const notices = (sessionID: Session.ID) =>
         sessions
           .context(sessionID)

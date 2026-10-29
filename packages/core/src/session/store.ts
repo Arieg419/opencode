@@ -70,6 +70,8 @@ export interface Interface {
    * children are resumed separately through their durable Job records.
    */
   readonly listSuspended: () => Effect.Effect<ReadonlyArray<Session.ID>>
+  /** Whether the Session holds an execution claim, meaning a turn started and never reached a terminal event. */
+  readonly isClaimed: (sessionID: Session.ID) => Effect.Effect<boolean>
   /**
    * Records the execution claim: the durable write-ahead intent that a turn is
    * (or was) in flight. Set when execution starts; a claim that survives to the
@@ -214,6 +216,15 @@ const layer = Layer.effect(
             Effect.orDie,
             Effect.map((rows) => rows.map((row) => row.sessionID)),
           )
+      }),
+      isClaimed: Effect.fn("SessionStore.isClaimed")(function* (sessionID) {
+        const row = yield* db
+          .select({ sessionID: SessionTable.id })
+          .from(SessionTable)
+          .where(and(eq(SessionTable.id, sessionID), isNotNull(SessionTable.time_suspended)))
+          .get()
+          .pipe(Effect.orDie)
+        return row !== undefined
       }),
       claim: Effect.fn("SessionStore.claim")(function* (sessionID) {
         // The null guard makes re-claiming a still-claimed Session a zero-row
