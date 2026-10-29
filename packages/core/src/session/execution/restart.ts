@@ -12,6 +12,7 @@ import { SessionStore } from "../store.js"
 import { ImageNotice } from "../../image/notice.js"
 import { ShellResult } from "../../shell/result.js"
 import { SubagentCompletion } from "../subagent-completion.js"
+import { SubagentQueue } from "../subagent-queue.js"
 
 const CONTINUE_AFTER_SERVER_RESTART =
   "The server restarted while you were working. Continue from where you left off without repeating completed work."
@@ -72,6 +73,7 @@ export const layer = (options?: Options) =>
       const bus = yield* Bus.Service
       const jobs = yield* Job.Service
       const sessions = yield* Session.Service
+      const queue = yield* SubagentQueue.Service
       const scope = yield* Effect.scope
       const maxAttempts = options?.maxAttempts ?? DEFAULT_MAX_ATTEMPTS
 
@@ -203,22 +205,28 @@ export const layer = (options?: Options) =>
           return
         }
 
+        const run = execution.resume(recovery.childSessionID).pipe(
+          Effect.andThen(store.context(recovery.childSessionID)),
+          Effect.map((messages) => {
+            const assistant = messages.findLast(
+              (message) =>
+                message.type === "assistant" && message.time.completed !== undefined && message.error === undefined,
+            )
+            return SubagentCompletion.text(assistant)
+          }),
+        )
+        // Recovered children, started or still queued, line up again in recovery order.
+        const limit = yield* sessions.get(recovery.parentSessionID).pipe(
+          Effect.flatMap(queue.limit),
+          Effect.orElseSucceed(() => undefined),
+        )
         yield* jobs.start({
           id: background.id,
           type: "subagent",
           title: recovery.description,
           notificationID: background.notificationID,
           recovery,
-          run: execution.resume(recovery.childSessionID).pipe(
-            Effect.andThen(store.context(recovery.childSessionID)),
-            Effect.map((messages) => {
-              const assistant = messages.findLast(
-                (message) =>
-                  message.type === "assistant" && message.time.completed !== undefined && message.error === undefined,
-              )
-              return SubagentCompletion.text(assistant)
-            }),
-          ),
+          run: limit === undefined ? run : queue.hold({ limit }, run),
         })
         yield* jobs.background(background.id)
         yield* jobs.wait({ id: background.id }).pipe(
@@ -274,5 +282,5 @@ export const layer = (options?: Options) =>
 export const node = makeGlobalNode({
   service: Service,
   layer: layer(),
-  deps: [SessionStore.node, SessionExecution.node, Bus.node, Job.node, Session.node],
+  deps: [SessionStore.node, SessionExecution.node, Bus.node, Job.node, Session.node, SubagentQueue.node],
 })

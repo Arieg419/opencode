@@ -3,7 +3,7 @@ export * as SubagentTool from "./subagent.js"
 import { ToolFailure } from "@opencode/ai/effect"
 import type { Context } from "@opencode/plugin/effect/plugin"
 import type { SessionHooks } from "@opencode/plugin/effect/session"
-import { Effect, Predicate, Schema } from "effect"
+import { Deferred, Effect, Fiber, Predicate, Schema } from "effect"
 import { Agent } from "../../agent.js"
 import { Config } from "../../config.js"
 import { Job } from "../../job.js"
@@ -13,14 +13,18 @@ import { Session } from "../../session.js"
 import { SessionSchema } from "../../session/schema.js"
 import { SubagentCompletion } from "../../session/subagent-completion.js"
 import { SubagentJob } from "../../session/subagent-job.js"
+import { SubagentQueue } from "../../session/subagent-queue.js"
 
 export const name = "subagent"
 
-const backgroundResult = (sessionID: SessionSchema.ID) => ({
+const backgroundResult = (sessionID: SessionSchema.ID, ahead?: number) => ({
   sessionID,
   status: "running" as const,
+  queued: ahead,
   output: [
-    `The subagent is working in the background (sessionID: ${sessionID}). You will be notified automatically when it finishes.`,
+    ahead === undefined
+      ? `The subagent is working in the background (sessionID: ${sessionID}). You will be notified automatically when it finishes.`
+      : `The subagent is queued in the background (sessionID: ${sessionID}, ${ahead} ahead) and starts when a running subagent finishes. You will be notified automatically when it finishes.`,
     "DO NOT sleep, poll for progress, ask the subagent for status, or duplicate this subagent's work; avoid working with the same files or topics it is using.",
     "Work on non-overlapping tasks, or briefly tell the user what you launched and end your response.",
     "To send it follow-ups or change its instructions while it runs, call subagent again with this sessionID.",
@@ -71,6 +75,7 @@ export const Plugin = {
     const permission = yield* Permission.Service
     const models = yield* Model.Service
     const subagents = yield* SubagentJob.Service
+    const queue = yield* SubagentQueue.Service
 
     const resolveModel = Effect.fn("SubagentTool.resolveModel")(function* (input: string) {
       const ref = yield* Effect.try({
@@ -204,10 +209,12 @@ export const Plugin = {
                   ))
 
               const background = input.background === true
+              const cap = existing === undefined ? yield* queue.limit(parent) : undefined
               yield* context.progress({ sessionID: child.id, status: "running" })
 
               // Standard prompt admission outside the job: Job.start joining a running child skips
               // its run effect, and the default wake starts an idle child or steers a running one.
+              // A capped child is admitted without waking so its first turn waits for a queue slot.
               yield* sessions
                 .prompt({
                   sessionID: child.id,
@@ -215,7 +222,7 @@ export const Plugin = {
                     existing === undefined
                       ? ["You are a subagent spawned by another session.", input.prompt].join("\n")
                       : input.prompt,
-                  ...(background && existing === undefined ? { resume: false } : {}),
+                  ...((background || cap !== undefined) && existing === undefined ? { resume: false } : {}),
                 })
                 .pipe(
                   Effect.mapError(
@@ -230,12 +237,37 @@ export const Plugin = {
                 agent: agent.name,
                 description: input.description,
               }
-              yield* subagents.start(recovery)
+              const queued = yield* Deferred.make<number | undefined>()
+              const started = yield* Deferred.make<void>()
+              yield* subagents.start(
+                recovery,
+                cap === undefined
+                  ? undefined
+                  : {
+                      limit: cap,
+                      queued: (ahead) => Deferred.succeed(queued, ahead).pipe(Effect.asVoid),
+                      started: Effect.all([Deferred.succeed(queued, undefined), Deferred.succeed(started, undefined)], {
+                        discard: true,
+                      }),
+                    },
+              )
+              // The hold settles `queued` as soon as the job starts: with its place in line, or undefined.
+              const ahead = cap === undefined ? undefined : yield* Deferred.await(queued)
+              if (ahead !== undefined)
+                yield* context.progress({ sessionID: child.id, status: "running", queued: ahead })
 
               if (background) {
                 yield* subagents.background(recovery)
-                return backgroundResult(child.id)
+                return backgroundResult(child.id, ahead)
               }
+              // Clears the queued note once a slot opens; progress is only valid while this call runs.
+              const announce =
+                ahead === undefined
+                  ? undefined
+                  : yield* Deferred.await(started).pipe(
+                      Effect.andThen(context.progress({ sessionID: child.id, status: "running" })),
+                      Effect.forkChild({ startImmediately: true }),
+                    )
 
               const result = yield* jobs.block({ id: child.id, sessionID: context.sessionID }).pipe(
                 Effect.onInterrupt(() =>
@@ -243,6 +275,7 @@ export const Plugin = {
                     discard: true,
                   }),
                 ),
+                Effect.ensuring(announce === undefined ? Effect.void : Fiber.interrupt(announce)),
               )
               if (result?.type === "backgrounded") {
                 yield* subagents.notify(recovery, result.info.started_at)
@@ -261,13 +294,17 @@ export const Plugin = {
                 output: result?.info.output ?? SubagentCompletion.NO_TEXT,
               }
             }).pipe(
-              Effect.map((output) => ({
+              Effect.map(({ queued, ...output }: typeof Output.Type & { readonly queued?: number }) => ({
                 output,
                 content:
                   output.status === "completed"
                     ? `<subagent sessionID="${output.sessionID}" state="completed">\n${output.output}\n</subagent>`
                     : output.output,
-                metadata: { sessionID: output.sessionID, status: output.status },
+                metadata: {
+                  sessionID: output.sessionID,
+                  status: output.status,
+                  ...(queued === undefined ? {} : { queued }),
+                },
               })),
             ),
         }),

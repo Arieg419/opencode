@@ -6,20 +6,25 @@ import type { LayerNode } from "@opencode/util/effect/layer-node"
 import { Job } from "../job.js"
 import { Session } from "../session.js"
 import { SubagentCompletion } from "./subagent-completion.js"
+import { SubagentQueue } from "./subagent-queue.js"
 
 type Recovery = Extract<Job.Recovery, { kind: "subagent" }>
 
 export interface Interface {
-  start: (recovery: Recovery) => Effect.Effect<Job.Info>
+  /** With `hold`, the child's first turn waits for a SubagentQueue slot inside the job. */
+  start: (recovery: Recovery, hold?: SubagentQueue.HoldInput) => Effect.Effect<Job.Info>
   background: (recovery: Recovery) => Effect.Effect<void>
   notify: (recovery: Recovery, startedAt: number) => Effect.Effect<void>
 }
 
 export class Service extends Context.Service<Service, Interface>()("@opencode/SubagentJob") {}
 
-const make: Effect.Effect<Interface, never, Session.Service | Job.Service | Scope.Scope> = Effect.gen(function* () {
+type Requirements = Session.Service | Job.Service | SubagentQueue.Service | Scope.Scope
+
+const make: Effect.Effect<Interface, never, Requirements> = Effect.gen(function* () {
   const sessions = yield* Session.Service
   const jobs = yield* Job.Service
+  const queue = yield* SubagentQueue.Service
   const scope = yield* Scope.Scope
   // Jobs and their completion observers outlive the plugin that launched them.
   // Fork with the global context too, rather than retaining the caller's location.
@@ -42,7 +47,7 @@ const make: Effect.Effect<Interface, never, Session.Service | Job.Service | Scop
   })
 
   return Service.of({
-    start: (recovery: Recovery) =>
+    start: (recovery: Recovery, hold?: SubagentQueue.HoldInput) =>
       jobs
         .start({
           id: recovery.childSessionID,
@@ -58,7 +63,7 @@ const make: Effect.Effect<Interface, never, Session.Service | Job.Service | Scop
                 message.type === "assistant" && message.time.completed !== undefined && message.error === undefined,
             )
             return SubagentCompletion.text(assistant)
-          }),
+          }).pipe((run) => (hold ? queue.hold(hold, run) : run)),
         })
         .pipe(Effect.setContext(context)),
     background: Effect.fn("SubagentJob.background")(function* (recovery: Recovery) {
@@ -72,5 +77,5 @@ const make: Effect.Effect<Interface, never, Session.Service | Job.Service | Scop
 export const node: LayerNode.Provider<Service, never, typeof Node.tags.values.global> = Node.makeGlobalNode({
   service: Service,
   layer: Layer.effect(Service, make),
-  deps: [Session.node, Job.node],
+  deps: [Session.node, Job.node, SubagentQueue.node],
 })

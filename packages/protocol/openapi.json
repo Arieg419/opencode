@@ -16291,6 +16291,10 @@
                 "type": "integer",
                 "minimum": 0
               },
+              "subagent_concurrency": {
+                "type": "integer",
+                "exclusiveMinimum": 0
+              },
               "location_idle_timeout": {
                 "anyOf": [
                   {
