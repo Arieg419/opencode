@@ -44,7 +44,8 @@ export function TerminalTabLabel(props: {
     if (frame !== undefined) cancelAnimationFrame(frame)
   })
 
-  // The label renders inside the strip's tab trigger, so the field keeps its keys and pointer from the trigger.
+  // The label renders inside the strip's tab trigger, so the field keeps its keys, pointer and focus from the trigger:
+  // the tab list returns focus that enters it from outside to the trigger.
   const isolate = (event: Event) => event.stopPropagation()
 
   return (
@@ -85,6 +86,7 @@ export function TerminalTabLabel(props: {
               setStore("editing", false)
             }}
             onKeyUp={isolate}
+            onFocusIn={isolate}
             onPointerDown={isolate}
             onMouseDown={isolate}
             onClick={isolate}

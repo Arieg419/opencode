@@ -304,7 +304,10 @@ export const Terminal = (props: TerminalProps) => {
     if (!t) return
     const focus = () => (t.textarea ? t.textarea.focus({ preventScroll: true }) : t.focus())
     focus()
-    setTimeout(focus, 0)
+    // A field focused meanwhile, such as a tab's rename field, keeps focus.
+    setTimeout(() => {
+      if (!(document.activeElement instanceof HTMLInputElement)) focus()
+    }, 0)
   }
 
   const handlePointerDown = () => {

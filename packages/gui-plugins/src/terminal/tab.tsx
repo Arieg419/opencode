@@ -134,6 +134,7 @@ export function TerminalTab(props: {
               <input
                 ref={input}
                 type="text"
+                aria-label={plugin.t("common.rename")}
                 value={store.title}
                 onInput={(e) => setStore("title", e.currentTarget.value)}
                 onBlur={save}

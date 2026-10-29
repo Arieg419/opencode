@@ -182,8 +182,9 @@ export function createTerminalModel(input: {
 
       if (!(event.target instanceof Element)) return
 
-      // The side region focuses its selected tab trigger or root while switching tabs; only focus leaving it cancels.
-      if (event.target.closest("#terminal-panel, #review-panel")) return
+      // The side region focuses its selected tab trigger or root while switching tabs; only focus leaving it, or
+      // entering a field in it such as a tab's rename field, cancels.
+      if (event.target.closest("#terminal-panel, #review-panel") && !(event.target instanceof HTMLInputElement)) return
 
       cancelFocus()
     }

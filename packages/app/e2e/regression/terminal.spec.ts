@@ -374,23 +374,54 @@ test.describe("narrow screens", () => {
     await expect(terminalScreen(page, persistentPty.created[0]!.id).locator("textarea")).toBeEditable()
     await expect.poll(() => persistentPty.sockets.map((socket) => socket.id)).toEqual([persistentPty.created[0]!.id])
   })
+
+  test("double-clicking a terminal tab that is not selected yet starts renaming it", async ({ page }) => {
+    const { persistentPty } = await openSession(page, {
+      name: "Terminals",
+      persistentPty: {
+        initial: [
+          { id: "pty_first", sessionID: SESSION, title: "Build" },
+          { id: "pty_second", sessionID: SESSION, title: "Deploy" },
+        ],
+      },
+    })
+
+    await page.getByRole("tablist", { name: "Session view", exact: true }).getByRole("tab", { name: "More..." }).click()
+    await page
+      .getByRole("dialog", { name: "More options", exact: true })
+      .getByRole("button", { name: "Terminal" })
+      .click()
+
+    const panel = page.locator("#terminal-panel")
+    await expect.poll(() => persistentPty.sockets.map((socket) => socket.id)).toEqual(["pty_first"])
+    const field = panel.getByRole("textbox", { name: "Rename", exact: true })
+    await panel.getByText("Deploy", { exact: true }).dblclick()
+    await expect(field).toBeFocused()
+    // The terminal connects after it mounts and asks for focus.
+    await expect.poll(() => persistentPty.sockets.map((socket) => socket.id)).toEqual(["pty_first", "pty_second"])
+    await expect(field).toBeFocused()
+  })
 })
 
-// The terminal that selecting the tab mounts takes focus from the rename field, which saves and closes it.
-test.fixme("double-clicking a terminal tab that is not selected yet starts renaming it", async ({ page }) => {
-  await openSession(page, {
+// Selecting the tab mounts its terminal, which asks for focus; the rename field keeps it.
+test("double-clicking a terminal tab that is not selected yet starts renaming it", async ({ page }) => {
+  const { persistentPty } = await openSession(page, {
     name: "Terminals",
     persistentPty: { initial: [{ id: "pty_named", sessionID: SESSION, title: "Terminal 1" }] },
   })
 
   await openSide(page)
   const strip = side(page).getByRole("tablist")
+  const field = strip.getByRole("textbox", { name: "Rename", exact: true })
   await strip.getByText("Terminal 1", { exact: true }).dblclick()
-  await expect(strip.getByRole("textbox", { name: "Rename", exact: true })).toBeFocused()
+  await expect(field).toBeFocused()
+  // The terminal connects after it mounts and asks for focus.
+  await expect.poll(() => persistentPty.sockets.map((socket) => socket.id)).toEqual(["pty_named"])
+  await expect(field).toBeFocused()
 })
 
-// The edit never starts: no rename field appears after choosing Rename, whether or not the tab is selected.
-test.fixme("a terminal tab's context menu starts renaming it", async ({ page }) => {
+// The menu returns focus to the tab as it closes; choosing Rename moves it to the rename field.
+test("a terminal tab's context menu starts renaming it", async ({ page }) => {
   await openSession(page, {
     name: "Terminals",
     persistentPty: { initial: [{ id: "pty_named", sessionID: SESSION, title: "Terminal 1" }] },
