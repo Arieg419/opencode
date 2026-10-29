@@ -118,8 +118,10 @@ export const fakeDaemon = Effect.fn(function* (features?: string[]) {
     if (request.op === "ping") return features ? { ...pong, features } : pong
     if (request.op === "list") return { type: "terminals", terminals }
     if (request.op === "create") {
-      const created = terminal(nextID++, String(request.group_id))
-      terminals.push(features ? { ...created, user_title: null } : created)
+      const base = terminal(nextID++, String(request.group_id))
+      // A daemon that advertises features always serializes user_title.
+      const created = features ? { ...base, user_title: null } : base
+      terminals.push(created)
       return { type: "created", terminal: created }
     }
     if (request.op === "control") return { type: "ok" }

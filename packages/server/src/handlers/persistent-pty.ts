@@ -100,8 +100,9 @@ export const PersistentPtyHandler = HttpApiBuilder.group(Api, "server.experiment
             yield* pty
               .resize(ctx.params.ptyID, ctx.payload.size.cols, ctx.payload.size.rows, ctx.payload.attachmentID)
               .pipe(mapTerminalError)
-          if (ctx.payload.title !== undefined)
-            yield* pty.rename(ctx.params.ptyID, ctx.payload.title).pipe(
+          if (ctx.payload.title === undefined) return { data: yield* pty.get(ctx.params.ptyID).pipe(mapTerminalError) }
+          return {
+            data: yield* pty.rename(ctx.params.ptyID, ctx.payload.title).pipe(
               Effect.catchTags({
                 "PersistentPty.NotFoundError": notFound,
                 "PersistentPty.UnsupportedError": (error) =>
@@ -111,8 +112,8 @@ export const PersistentPtyHandler = HttpApiBuilder.group(Api, "server.experiment
                   }),
                 "PersistentPty.UnavailableError": unavailable,
               }),
-            )
-          return { data: yield* pty.get(ctx.params.ptyID).pipe(mapTerminalError) }
+            ),
+          }
         }),
       )
       .handle(
