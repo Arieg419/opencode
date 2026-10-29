@@ -1433,9 +1433,9 @@ export function make(options: ClientOptions) {
             {
               method: "PUT",
               path: `/api/experimental/persistent-pty/${encodeURIComponent(input.ptyID)}`,
-              body: { attachmentID: input["attachmentID"], size: input["size"] },
+              body: { attachmentID: input["attachmentID"], size: input["size"], title: input["title"] },
               successStatus: 200,
-              declaredStatuses: [400, 401, 404, 503],
+              declaredStatuses: [400, 401, 404, 501, 503],
               empty: false,
             },
             requestOptions,

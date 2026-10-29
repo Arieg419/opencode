@@ -10668,6 +10668,7 @@
                     "pty.deleted",
                     "persistent-pty.added",
                     "persistent-pty.removed",
+                    "persistent-pty.updated",
                     "shell.created",
                     "shell.exited",
                     "shell.deleted",
@@ -10775,6 +10776,7 @@
                           "pty.deleted",
                           "persistent-pty.added",
                           "persistent-pty.removed",
+                          "persistent-pty.updated",
                           "shell.created",
                           "shell.exited",
                           "shell.deleted",
@@ -12196,6 +12198,16 @@
               }
             }
           },
+          "501": {
+            "description": "PtyFeatureUnsupportedError",
+            "content": {
+              "application/json": {
+                "schema": {
+                  "$ref": "#/components/schemas/PtyFeatureUnsupportedErrorEncoded"
+                }
+              }
+            }
+          },
           "503": {
             "description": "ServiceUnavailableError",
             "content": {
@@ -12207,6 +12219,7 @@
             }
           }
         },
+        "description": "Resize when size is present and rename when title is present; a null title clears the user title so the shell's title shows again. Renaming fails with 501 while the terminal service predates renaming.",
         "requestBody": {
           "content": {
             "application/json": {
@@ -20085,6 +20098,16 @@
           "sessionID": {
             "$ref": "#/components/schemas/Session.ID"
           },
+          "userTitle": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
+          },
           "foregroundProcess": {
             "anyOf": [
               {
@@ -20139,6 +20162,7 @@
           "status",
           "pid",
           "sessionID",
+          "userTitle",
           "foregroundProcess",
           "size",
           "output"
@@ -20268,9 +20292,18 @@
             },
             "required": ["cols", "rows"],
             "additionalProperties": false
+          },
+          "title": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ]
           }
         },
-        "required": ["size"],
         "additionalProperties": false
       },
       "Plugin.Features": {
@@ -21001,6 +21034,23 @@
       "Pty.ID": {
         "type": "string",
         "pattern": "^pty"
+      },
+      "PtyFeatureUnsupportedErrorEncoded": {
+        "type": "object",
+        "properties": {
+          "_tag": {
+            "type": "string",
+            "enum": ["PtyFeatureUnsupportedError"]
+          },
+          "feature": {
+            "type": "string"
+          },
+          "message": {
+            "type": "string"
+          }
+        },
+        "required": ["_tag", "feature", "message"],
+        "additionalProperties": false
       },
       "PtyNotFoundErrorEncoded": {
         "type": "object",

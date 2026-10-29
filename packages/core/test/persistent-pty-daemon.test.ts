@@ -85,6 +85,25 @@ it.live("rediscovers a rotated registration when acquiring a subscription", () =
   }),
 )
 
+it.live("reports the features of the daemon it connected to", () =>
+  Effect.gen(function* () {
+    const { root, directory } = yield* temporaryRuntime()
+    const socketPath = path.join(directory, "daemon.sock")
+    let features: string[] | undefined
+    yield* listen(socketPath, (_socket, request) => {
+      if (request.op === "ping") return features ? { ...pong, features } : pong
+      return { type: "terminals", terminals: [] }
+    })
+    yield* Effect.promise(() => writeRegistration(directory, socketPath))
+    const old = yield* makeDaemonTransport(root, "daemon")
+    expect(yield* old.supports("rename")).toBeFalse()
+
+    features = ["rename"]
+    const current = yield* makeDaemonTransport(root, "daemon")
+    expect(yield* current.supports("rename")).toBeTrue()
+  }),
+)
+
 it.live("retries a start-required request when connection fails before dispatch", () =>
   Effect.gen(function* () {
     const { root, directory } = yield* temporaryRuntime()
