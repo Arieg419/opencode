@@ -3,7 +3,7 @@ export * as Artifact from "./artifact.js"
 import { Schema } from "effect"
 import { ephemeral, inventory } from "./event.js"
 import { ascending } from "./identifier.js"
-import { PositiveInt, optional, statics } from "./schema.js"
+import { optional, statics } from "./schema.js"
 import { SessionID } from "./session-id.js"
 
 export const ID = Schema.String.check(Schema.isStartingWith("art_")).pipe(
@@ -21,14 +21,9 @@ export const ProviderID = Schema.Trim.check(Schema.isNonEmpty()).pipe(
 )
 export type ProviderID = typeof ProviderID.Type
 
-export const Capability = Schema.Literals([
-  "static",
-  "markdown",
-  "versions",
-  "server-code",
-  "sqlite",
-  "durable-objects",
-]).annotate({ identifier: "Artifact.Capability" })
+export const Capability = Schema.Literals(["static", "server-code", "sqlite", "durable-objects"]).annotate({
+  identifier: "Artifact.Capability",
+})
 export type Capability = typeof Capability.Type
 
 export interface Provider extends Schema.Schema.Type<typeof Provider> {}
@@ -53,8 +48,6 @@ export const Info = Schema.Struct({
   title: Schema.String,
   entry: Schema.String,
   url: Schema.String,
-  version: PositiveInt,
-  metadata: Schema.Record(Schema.String, Schema.String).pipe(optional),
   time: Time,
 }).annotate({ identifier: "Artifact.Info" })
 
@@ -71,7 +64,6 @@ export const CreateInput = Schema.Struct({
   entry: Schema.String.pipe(optional),
   provider: ProviderID.pipe(optional),
   sessionID: SessionID.pipe(optional),
-  metadata: Schema.Record(Schema.String, Schema.String).pipe(optional),
 }).annotate({ identifier: "Artifact.CreateInput" })
 
 export interface UpdateInput extends Schema.Schema.Type<typeof UpdateInput> {}
@@ -79,9 +71,7 @@ export const UpdateInput = Schema.Struct({
   title: Schema.String.pipe(optional),
   files: Schema.Record(Schema.String, Schema.String),
   entry: Schema.String.pipe(optional),
-  baseVersion: PositiveInt.pipe(optional),
   sessionID: SessionID.pipe(optional),
-  metadata: Schema.Record(Schema.String, Schema.String).pipe(optional),
 }).annotate({ identifier: "Artifact.UpdateInput" })
 
 const Updated = ephemeral({

@@ -1,4 +1,3 @@
-import type { OpenCodeClient } from "@opencode/client"
 import type { Artifact } from "@opencode/schema/artifact"
 import type { Session } from "@opencode/schema/session"
 import type { Transform } from "./registration.js"
@@ -7,19 +6,15 @@ export interface ArtifactProviderCreateInput {
   readonly id: Artifact.ID
   readonly title: string
   readonly entry: string
-  readonly version: number
   readonly files: Readonly<Record<string, Uint8Array>>
   readonly sessionID?: Session.ID
-  readonly metadata?: Readonly<Record<string, string>>
 }
 
 export interface ArtifactProviderUpdateInput {
   readonly title: string
   readonly entry: string
-  readonly version: number
   readonly files: Readonly<Record<string, Uint8Array>>
   readonly sessionID?: Session.ID
-  readonly metadata?: Readonly<Record<string, string>>
 }
 
 export interface ArtifactProviderResult {
@@ -56,9 +51,7 @@ export interface ArtifactEditor {
   }
 }
 
-type PromiseArtifactMethods = Omit<OpenCodeClient["experimental"]["artifacts"], "view">
-
-export interface ExperimentalArtifactDomain extends PromiseArtifactMethods {
+export interface ExperimentalArtifactDomain {
   readonly transform: Transform<ArtifactEditor>
   readonly reload: () => Promise<void>
 }

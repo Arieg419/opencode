@@ -1,4 +1,3 @@
-import type { ExperimentalApi } from "@opencode/client/effect/api"
 import type { Artifact } from "@opencode/schema/artifact"
 import type { Session } from "@opencode/schema/session"
 import type { Effect } from "effect"
@@ -8,19 +7,15 @@ export interface ArtifactProviderCreateInput {
   readonly id: Artifact.ID
   readonly title: string
   readonly entry: string
-  readonly version: number
   readonly files: Readonly<Record<string, Uint8Array>>
   readonly sessionID?: Session.ID
-  readonly metadata?: Readonly<Record<string, string>>
 }
 
 export interface ArtifactProviderUpdateInput {
   readonly title: string
   readonly entry: string
-  readonly version: number
   readonly files: Readonly<Record<string, Uint8Array>>
   readonly sessionID?: Session.ID
-  readonly metadata?: Readonly<Record<string, string>>
 }
 
 export interface ArtifactProviderResult {
@@ -50,9 +45,7 @@ export interface ArtifactEditor {
   }
 }
 
-type EffectArtifactMethods = ExperimentalApi<unknown>["artifacts"]
-
-export interface ExperimentalArtifactDomain extends EffectArtifactMethods {
+export interface ExperimentalArtifactDomain {
   readonly transform: Transform<ArtifactEditor>
   readonly reload: () => Effect.Effect<void>
 }

@@ -36,14 +36,14 @@ const store = new Map()
 const decoder = new TextDecoder()
 const encoder = new TextEncoder()
 export default {
-  id: "test-r2-artifacts",
+  id: "test-s3-artifacts",
   async setup(ctx) {
     await ctx.experimental.artifact.transform((editor) => {
       editor.add({
-        id: "r2",
-        name: "R2 Bucket",
-        capabilities: ["static", "versions"],
-        prompt: "Publishes static files to R2.",
+        id: "s3",
+        name: "S3 Static",
+        capabilities: ["static"],
+        prompt: "Artifacts go to a static S3 bucket.",
         async create(input) {
           store.set(input.id, Object.fromEntries(Object.entries(input.files).map(([k, v]) => [k, decoder.decode(v)])))
           return { url: "https://artifacts.example.test/" + input.id + "/" }
@@ -89,11 +89,11 @@ export default {
         api.experimental.artifacts.list({ location: { directory: disabled } }),
       ).rejects.toMatchObject({ _tag: "ForbiddenError" })
 
-      // Providers list includes built-in local (default) and plugin-registered r2
+      // Providers list includes built-in local (default) and plugin-registered s3
       const providers = await api.experimental.artifacts.providers({ location: { directory: enabled } })
       expect(providers.data).toEqual([
-        { id: "local", name: "Local", capabilities: ["static", "markdown", "versions"], default: true },
-        { id: "r2", name: "R2 Bucket", capabilities: ["static", "versions"], default: false },
+        { id: "local", name: "Local", capabilities: ["static"], default: true },
+        { id: "s3", name: "S3 Static", capabilities: ["static"], default: false },
       ])
 
       const session = await api.session.create({ location: { directory: enabled } })
@@ -113,7 +113,6 @@ export default {
         sessionID: session.id,
         title: "Wait stats",
         entry: "index.html",
-        version: 1,
         url: `/api/experimental/artifacts/${encodeURIComponent(created.data.id)}/view/`,
       })
 
@@ -138,58 +137,30 @@ export default {
       expect(v1Js.status).toBe(200)
       expect(await v1Js.text()).toBe("window.VERSION = 1")
 
-      // Update to v2 keeps same ID/URL and preserves pinned ?version=1
+      // Update replaces files at the same ID and URL
       const updated = await api.experimental.artifacts.update({
         artifactID: created.data.id,
-        baseVersion: 1,
         files: {
           "index.html": "<!doctype html><h1>v2</h1>",
         },
       })
-      expect(updated.data.version).toBe(2)
-
-      await expect(
-        api.experimental.artifacts.update({
-          artifactID: created.data.id,
-          baseVersion: 1,
-          files: { "index.html": "stale" },
-        }),
-      ).rejects.toMatchObject({ _tag: "ConflictError" })
+      expect(updated.data.url).toBe(created.data.url)
 
       const latestHtml = await handler(
         new Request(`http://opencode.local/api/experimental/artifacts/${created.data.id}/view/`),
       )
       expect(await latestHtml.text()).toContain("<h1>v2</h1>")
 
-      const pinnedV1 = await handler(
-        new Request(`http://opencode.local/api/experimental/artifacts/${created.data.id}/view/?version=1`),
-      )
-      expect(await pinnedV1.text()).toContain("<h1>v1</h1>")
-
-      // Markdown entry renders HTML shell by default and raw Markdown with ?raw=1
-      const md = await api.experimental.artifacts.create({
-        location: { directory: enabled },
-        sessionID: session.id,
-        title: "Design Note",
-        files: { "index.md": "# Hello Markdown" },
-      })
-      const mdHtml = await handler(new Request(`http://opencode.local${md.data.url}`))
-      expect(mdHtml.headers.get("content-type")).toContain("text/html")
-      expect(await mdHtml.text()).toContain("# Hello Markdown")
-
-      const mdRaw = await handler(new Request(`http://opencode.local${md.data.url}?raw=1`))
-      expect(await mdRaw.text()).toBe("# Hello Markdown")
-
-      // Per-request override to plugin-registered "r2" provider
+      // Per-request override to plugin-registered "s3" provider
       const remote = await api.experimental.artifacts.create({
         location: { directory: enabled },
         sessionID: session.id,
-        provider: "r2",
+        provider: "s3",
         title: "Shared bundle",
         files: { "index.html": "<p>remote</p>" },
       })
       expect(remote.data).toMatchObject({
-        provider: "r2",
+        provider: "s3",
         url: `https://artifacts.example.test/${remote.data.id}/`,
       })
 
@@ -199,11 +170,11 @@ export default {
       })
       expect(fetchedRemote.data.files).toEqual({ "index.html": "<p>remote</p>" })
 
-      const listedR2 = await api.experimental.artifacts.list({
+      const listedS3 = await api.experimental.artifacts.list({
         sessionID: session.id,
-        provider: "r2",
+        provider: "s3",
       })
-      expect(listedR2.data.map((item) => item.id)).toEqual([remote.data.id])
+      expect(listedS3.data.map((item) => item.id)).toEqual([remote.data.id])
 
       // Delete removes record and returns 404 thereafter
       await api.experimental.artifacts.delete({ artifactID: created.data.id, location: { directory: enabled } })

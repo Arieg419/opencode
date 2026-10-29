@@ -1666,7 +1666,6 @@ const EndpointExperimentalArtifactsCreate =
           entry: input["entry"],
           provider: input["provider"],
           sessionID: input["sessionID"],
-          metadata: input["metadata"],
         },
       }).pipe(Effect.mapError(mapClientError)),
     )
@@ -1686,14 +1685,7 @@ const EndpointExperimentalArtifactsUpdate =
       raw["artifacts.update"]({
         params: { artifactID: input["artifactID"] },
         query: { location: input["location"] },
-        payload: {
-          title: input["title"],
-          files: input["files"],
-          entry: input["entry"],
-          baseVersion: input["baseVersion"],
-          sessionID: input["sessionID"],
-          metadata: input["metadata"],
-        },
+        payload: { title: input["title"], files: input["files"], entry: input["entry"], sessionID: input["sessionID"] },
       }).pipe(Effect.mapError(mapClientError)),
     )
 

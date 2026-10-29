@@ -29,25 +29,20 @@ export { Capability, Content, CreateInput, Event, ID, Info, Provider, ProviderID
 
 export const LocalProviderID = ProviderID.make("local")
 const ItemPrefix = "artifact:item:"
-const DefaultProviderKey = "artifact:provider"
 
 export interface ProviderCreateInput {
   readonly id: ID
   readonly title: string
   readonly entry: string
-  readonly version: number
   readonly files: Readonly<Record<string, Uint8Array>>
   readonly sessionID?: SessionID
-  readonly metadata?: Readonly<Record<string, string>>
 }
 
 export interface ProviderUpdateInput {
   readonly title: string
   readonly entry: string
-  readonly version: number
   readonly files: Readonly<Record<string, Uint8Array>>
   readonly sessionID?: SessionID
-  readonly metadata?: Readonly<Record<string, string>>
 }
 
 export interface ProviderResult {
@@ -65,29 +60,9 @@ export interface ProviderImplementation {
   readonly delete: (id: ID) => Effect.Effect<void, unknown>
 }
 
-export interface CreateBytesInput {
-  readonly title: string
-  readonly files: Readonly<Record<string, Uint8Array>>
-  readonly entry?: string
-  readonly provider?: ProviderID
-  readonly sessionID?: SessionID
-  readonly metadata?: Readonly<Record<string, string>>
-}
-
-export interface UpdateBytesInput {
-  readonly title?: string
-  readonly files: Readonly<Record<string, Uint8Array>>
-  readonly entry?: string
-  readonly baseVersion?: number
-  readonly sessionID?: SessionID
-  readonly metadata?: Readonly<Record<string, string>>
-}
-
 export interface LocalFile {
   readonly bytes: Uint8Array
   readonly mime: string
-  readonly entry: string
-  readonly version: number
 }
 
 export interface ProviderPrompts {
@@ -147,16 +122,6 @@ export class InvalidError extends Schema.TaggedError<InvalidError>()("Artifact.I
   }
 }
 
-export class ConflictError extends Schema.TaggedError<ConflictError>()("Artifact.ConflictError", {
-  artifactID: ID,
-  baseVersion: Schema.Number,
-  currentVersion: Schema.Number,
-}) {
-  override get message() {
-    return `Artifact ${this.artifactID} is at version ${this.currentVersion} (expected baseVersion ${this.baseVersion})`
-  }
-}
-
 export class ProviderError extends Schema.TaggedError<ProviderError>()("Artifact.ProviderError", {
   providerID: ProviderID,
   cause: Schema.Defect(),
@@ -174,7 +139,6 @@ export type Error =
   | FileMissingError
   | ProviderNotFoundError
   | InvalidError
-  | ConflictError
   | ProviderError
   | Session.NotFoundError
 
@@ -201,15 +165,13 @@ export interface Interface extends State.Transformable<Editor> {
     readonly provider?: ProviderID
   }) => Effect.Effect<readonly Info[], DisabledError | Session.NotFoundError>
   readonly create: (input: CreateInput) => Effect.Effect<Info, Error>
-  readonly createBytes: (input: CreateBytesInput) => Effect.Effect<Info, Error>
   readonly get: (id: ID) => Effect.Effect<Content, DisabledError | NotFoundError | ProviderNotFoundError | ProviderError>
   readonly info: (id: ID) => Effect.Effect<Info, DisabledError | NotFoundError>
   readonly update: (id: ID, input: UpdateInput) => Effect.Effect<Info, Error>
-  readonly updateBytes: (id: ID, input: UpdateBytesInput) => Effect.Effect<Info, Error>
   readonly remove: (id: ID) => Effect.Effect<void, DisabledError | NotFoundError | ProviderError>
   readonly readLocalFile: (
     id: ID,
-    options?: { readonly path?: string; readonly version?: number; readonly raw?: boolean },
+    subpath?: string,
   ) => Effect.Effect<LocalFile, DisabledError | NotFoundError | FileMissingError | InvalidError>
 }
 
@@ -229,30 +191,24 @@ const layer = Layer.effect(
     const sessions = yield* Session.Service
 
     const rootDir = path.join(global.data, "artifacts")
-    const versionDir = (id: ID, version: number) => path.join(rootDir, id, `v${version}`)
+    const itemDir = (id: ID) => path.join(rootDir, id)
 
     const localProvider: ProviderImplementation = {
       id: LocalProviderID,
       name: "Local",
-      capabilities: ["static", "markdown", "versions"],
+      capabilities: ["static"],
       prompt:
-        "Artifacts are stored on disk and served as HTML by this OpenCode server. Only people who can reach this server can open them.",
+        "Artifacts are served as HTML by this OpenCode server. Only people who can reach this server can open them.",
       create: (input) =>
-        writeVersionTree(versionDir(input.id, input.version), input.files).pipe(
+        replaceDirectoryFiles(itemDir(input.id), input.files).pipe(
           Effect.as({ url: `/api/experimental/artifacts/${encodeURIComponent(input.id)}/view/` }),
         ),
-      read: (id) =>
-        Effect.gen(function* () {
-          const current = yield* loadInfo(kv, id)
-          if (!current) return {}
-          return yield* readVersionTree(versionDir(id, current.version))
-        }),
+      read: (id) => readDirectoryFiles(itemDir(id)),
       update: (id, input) =>
-        writeVersionTree(versionDir(id, input.version), input.files).pipe(
+        replaceDirectoryFiles(itemDir(id), input.files).pipe(
           Effect.as({ url: `/api/experimental/artifacts/${encodeURIComponent(id)}/view/` }),
         ),
-      delete: (id) =>
-        Effect.promise(() => fs.rm(path.join(rootDir, id), { recursive: true, force: true })),
+      delete: (id) => Effect.promise(() => fs.rm(itemDir(id), { recursive: true, force: true })),
     }
 
     const snapshotProviders = (data: Data) =>
@@ -294,110 +250,20 @@ const layer = Layer.effect(
     const requireEnabled = () =>
       isEnabled().pipe(Effect.flatMap((on) => (on ? Effect.void : Effect.fail(new DisabledError()))))
 
-    const activeDefaultID = Effect.fn("Artifact.activeDefaultID")(function* () {
+    const activeDefaultID = () => {
       const data = state.get()
-      if (data.selection && data.providers.has(data.selection)) return data.selection
-      const stored = yield* kv.get(DefaultProviderKey)
-      const decoded = Schema.decodeUnknownOption(ProviderID)(stored)
-      if (Option.isSome(decoded) && data.providers.has(decoded.value)) return decoded.value
-      return LocalProviderID
-    })
+      return data.selection && data.providers.has(data.selection) ? data.selection : LocalProviderID
+    }
 
-    const resolveProvider = Effect.fn("Artifact.resolveProvider")(function* (requested?: ProviderID) {
+    const resolveProvider = (requested?: ProviderID) => {
       const data = state.get()
-      const target = requested ?? (yield* activeDefaultID())
+      const target = requested ?? activeDefaultID()
       const found = data.providers.get(target)
-      if (!found) return yield* new ProviderNotFoundError({ providerID: target })
-      return found
-    })
+      return found ? Effect.succeed(found) : Effect.fail(new ProviderNotFoundError({ providerID: target }))
+    }
 
     const checkSession = (sessionID?: SessionID) =>
       sessionID === undefined ? Effect.void : sessions.get(sessionID).pipe(Effect.asVoid)
-
-    const createBytes = Effect.fn("Artifact.createBytes")(function* (input: CreateBytesInput) {
-      yield* requireEnabled()
-      yield* checkSession(input.sessionID)
-      const title = input.title.trim()
-      if (!title) return yield* new InvalidError({ reason: "Artifact title must not be empty", field: "title" })
-      const files = yield* normalizeFiles(input.files)
-      const entry = yield* resolveEntry(files, input.entry)
-      const provider = yield* resolveProvider(input.provider)
-      const id = ID.create()
-      const version = 1
-      const now = yield* Clock.currentTimeMillis
-      const created = yield* provider
-        .create({
-          id,
-          title,
-          entry,
-          version,
-          files,
-          sessionID: input.sessionID,
-          metadata: input.metadata,
-        })
-        .pipe(Effect.mapError((cause) => new ProviderError({ providerID: provider.id, cause })))
-      const info: Info = Info.make({
-        id,
-        provider: provider.id,
-        ...(input.sessionID === undefined ? {} : { sessionID: input.sessionID }),
-        title,
-        entry,
-        url: created.url ?? `/api/experimental/artifacts/${encodeURIComponent(id)}/view/`,
-        version,
-        ...(input.metadata === undefined ? {} : { metadata: input.metadata }),
-        time: { created: now, updated: now },
-      })
-      yield* kv.set(ItemPrefix + id, encodeStoredInfo(info))
-      yield* bus.publish(Event.Updated, {})
-      return info
-    })
-
-    const updateBytes = Effect.fn("Artifact.updateBytes")(function* (id: ID, input: UpdateBytesInput) {
-      yield* requireEnabled()
-      yield* checkSession(input.sessionID)
-      const existing = yield* loadInfo(kv, id)
-      if (!existing) return yield* new NotFoundError({ artifactID: id })
-      if (input.baseVersion !== undefined && input.baseVersion !== existing.version) {
-        return yield* new ConflictError({
-          artifactID: id,
-          baseVersion: input.baseVersion,
-          currentVersion: existing.version,
-        })
-      }
-      const title = input.title === undefined ? existing.title : input.title.trim()
-      if (!title) return yield* new InvalidError({ reason: "Artifact title must not be empty", field: "title" })
-      const files = yield* normalizeFiles(input.files)
-      const entry = yield* resolveEntry(files, input.entry ?? (files[existing.entry] ? existing.entry : undefined))
-      const provider = yield* resolveProvider(existing.provider)
-      const version = existing.version + 1
-      const now = yield* Clock.currentTimeMillis
-      const sessionID = input.sessionID ?? existing.sessionID
-      const metadata = input.metadata === undefined ? existing.metadata : { ...existing.metadata, ...input.metadata }
-      const updated = yield* provider
-        .update(id, {
-          title,
-          entry,
-          version,
-          files,
-          sessionID,
-          metadata,
-        })
-        .pipe(Effect.mapError((cause) => new ProviderError({ providerID: provider.id, cause })))
-      const info: Info = Info.make({
-        id,
-        provider: existing.provider,
-        ...(sessionID === undefined ? {} : { sessionID }),
-        title,
-        entry,
-        url: updated.url ?? existing.url,
-        version,
-        ...(metadata === undefined ? {} : { metadata }),
-        time: { created: existing.time.created, updated: now },
-      })
-      yield* kv.set(ItemPrefix + id, encodeStoredInfo(info))
-      yield* bus.publish(Event.Updated, {})
-      return info
-    })
 
     return Service.of({
       transform: state.transform,
@@ -405,7 +271,7 @@ const layer = Layer.effect(
       enabled: isEnabled,
       providers: Effect.fn("Artifact.providers")(function* () {
         yield* requireEnabled()
-        const defaultID = yield* activeDefaultID()
+        const defaultID = activeDefaultID()
         return Array.from(state.get().providers.values(), (provider) =>
           Provider.make({
             id: provider.id,
@@ -416,10 +282,9 @@ const layer = Layer.effect(
         ).toSorted((a, b) => Number(b.default) - Number(a.default) || a.name.localeCompare(b.name))
       }),
       prompts: Effect.fn("Artifact.prompts")(function* () {
-        const defaultID = yield* activeDefaultID()
-        const all = Array.from(state.get().providers.values())
+        const defaultID = activeDefaultID()
         const defaultProvider = state.get().providers.get(defaultID) ?? localProvider
-        const others = all
+        const others = Array.from(state.get().providers.values())
           .filter((item) => item.id !== defaultProvider.id)
           .toSorted((a, b) => a.name.localeCompare(b.name))
           .map((item) => ({ id: item.id, name: item.name, capabilities: item.capabilities }))
@@ -445,16 +310,31 @@ const layer = Layer.effect(
           )
           .toSorted((a, b) => b.time.updated - a.time.updated || b.id.localeCompare(a.id))
       }),
-      create: (input) =>
-        createBytes({
-          title: input.title,
-          files: encodeStringFiles(input.files),
-          entry: input.entry,
-          provider: input.provider,
-          sessionID: input.sessionID,
-          metadata: input.metadata,
-        }),
-      createBytes,
+      create: Effect.fn("Artifact.create")(function* (input) {
+        yield* requireEnabled()
+        yield* checkSession(input.sessionID)
+        const title = input.title.trim()
+        if (!title) return yield* new InvalidError({ reason: "Artifact title must not be empty", field: "title" })
+        const files = yield* normalizeFiles(encodeStringFiles(input.files))
+        const entry = yield* resolveEntry(files, input.entry)
+        const provider = yield* resolveProvider(input.provider)
+        const id = ID.create()
+        const now = yield* Clock.currentTimeMillis
+        const created = yield* provider
+          .create({ id, title, entry, files, sessionID: input.sessionID })
+          .pipe(Effect.mapError((cause) => new ProviderError({ providerID: provider.id, cause })))
+        const info = Info.make({
+          id,
+          provider: provider.id,
+          ...(input.sessionID === undefined ? {} : { sessionID: input.sessionID }),
+          title,
+          entry,
+          url: created.url ?? `/api/experimental/artifacts/${encodeURIComponent(id)}/view/`,
+          time: { created: now, updated: now },
+        })
+        yield* kv.set(ItemPrefix + id, encodeStoredInfo(info))
+        return info
+      }),
       info: Effect.fn("Artifact.info")(function* (id) {
         yield* requireEnabled()
         const existing = yield* loadInfo(kv, id)
@@ -474,16 +354,33 @@ const layer = Layer.effect(
           files: decodeReadFiles(raw),
         })
       }),
-      update: (id, input) =>
-        updateBytes(id, {
-          title: input.title,
-          files: encodeStringFiles(input.files),
-          entry: input.entry,
-          baseVersion: input.baseVersion,
-          sessionID: input.sessionID,
-          metadata: input.metadata,
-        }),
-      updateBytes,
+      update: Effect.fn("Artifact.update")(function* (id, input) {
+        yield* requireEnabled()
+        yield* checkSession(input.sessionID)
+        const existing = yield* loadInfo(kv, id)
+        if (!existing) return yield* new NotFoundError({ artifactID: id })
+        const title = input.title === undefined ? existing.title : input.title.trim()
+        if (!title) return yield* new InvalidError({ reason: "Artifact title must not be empty", field: "title" })
+        const files = yield* normalizeFiles(encodeStringFiles(input.files))
+        const entry = yield* resolveEntry(files, input.entry ?? (files[existing.entry] ? existing.entry : undefined))
+        const provider = yield* resolveProvider(existing.provider)
+        const now = yield* Clock.currentTimeMillis
+        const sessionID = input.sessionID ?? existing.sessionID
+        const updated = yield* provider
+          .update(id, { title, entry, files, sessionID })
+          .pipe(Effect.mapError((cause) => new ProviderError({ providerID: provider.id, cause })))
+        const info = Info.make({
+          id,
+          provider: existing.provider,
+          ...(sessionID === undefined ? {} : { sessionID }),
+          title,
+          entry,
+          url: updated.url ?? existing.url,
+          time: { created: existing.time.created, updated: now },
+        })
+        yield* kv.set(ItemPrefix + id, encodeStoredInfo(info))
+        return info
+      }),
       remove: Effect.fn("Artifact.remove")(function* (id) {
         yield* requireEnabled()
         const existing = yield* loadInfo(kv, id)
@@ -495,9 +392,8 @@ const layer = Layer.effect(
             .pipe(Effect.mapError((cause) => new ProviderError({ providerID: provider.id, cause })))
         }
         yield* kv.remove(ItemPrefix + id)
-        yield* bus.publish(Event.Updated, {})
       }),
-      readLocalFile: Effect.fn("Artifact.readLocalFile")(function* (id, options) {
+      readLocalFile: Effect.fn("Artifact.readLocalFile")(function* (id, subpath) {
         yield* requireEnabled()
         const existing = yield* loadInfo(kv, id)
         if (!existing) return yield* new NotFoundError({ artifactID: id })
@@ -507,13 +403,8 @@ const layer = Layer.effect(
             field: "artifactID",
           })
         }
-        const version = options?.version ?? existing.version
-        if (version < 1 || version > existing.version) {
-          return yield* new FileMissingError({ artifactID: id, path: `v${version}` })
-        }
-        const requested = options?.path?.trim() ? yield* normalizePath(options.path) : existing.entry
-        const base = versionDir(id, version)
-        const target = path.join(base, ...requested.split("/"))
+        const requested = subpath?.trim() ? yield* normalizePath(subpath) : existing.entry
+        const target = path.join(itemDir(id), ...requested.split("/"))
         const exists = yield* Effect.promise(() =>
           fs
             .stat(target)
@@ -522,21 +413,7 @@ const layer = Layer.effect(
         )
         if (!exists) return yield* new FileMissingError({ artifactID: id, path: requested })
         const bytes = yield* Effect.promise(() => fs.readFile(target).then((buf) => new Uint8Array(buf)))
-        if (!options?.raw && requested === existing.entry && requested.toLowerCase().endsWith(".md")) {
-          const markdown = new TextDecoder().decode(bytes)
-          return {
-            bytes: encoder.encode(renderMarkdownShell(existing.title, markdown)),
-            mime: "text/html; charset=utf-8",
-            entry: existing.entry,
-            version,
-          }
-        }
-        return {
-          bytes,
-          mime: detectFileMime(requested, bytes),
-          entry: existing.entry,
-          version,
-        }
+        return { bytes, mime: detectFileMime(requested, bytes) }
       }),
     })
   }),
@@ -553,28 +430,8 @@ function encodeStringFiles(files: Readonly<Record<string, string>>) {
 }
 
 function decodeReadFiles(files: Readonly<Record<string, Uint8Array>>) {
-  const decoder = new TextDecoder("utf-8", { fatal: true })
-  return Object.fromEntries(
-    Object.entries(files).map(([filePath, bytes]) => {
-      const mime = detectFileMime(filePath, bytes)
-      if (!Mime.isTextual(mime.split(";")[0]?.trim() ?? mime)) {
-        return [filePath, `data:${mime};base64,${Buffer.from(bytes).toString("base64")}`]
-      }
-      const text = decodeUtf8(decoder, bytes)
-      return [
-        filePath,
-        text === undefined ? `data:application/octet-stream;base64,${Buffer.from(bytes).toString("base64")}` : text,
-      ]
-    }),
-  )
-}
-
-function decodeUtf8(decoder: TextDecoder, bytes: Uint8Array) {
-  try {
-    return decoder.decode(bytes)
-  } catch {
-    return undefined
-  }
+  const decoder = new TextDecoder()
+  return Object.fromEntries(Object.entries(files).map(([filePath, bytes]) => [filePath, decoder.decode(bytes)]))
 }
 
 function detectFileMime(filePath: string, bytes: Uint8Array) {
@@ -662,8 +519,9 @@ function scanAllInfos(kv: KV.Interface) {
   })
 }
 
-function writeVersionTree(baseDir: string, files: Readonly<Record<string, Uint8Array>>) {
+function replaceDirectoryFiles(baseDir: string, files: Readonly<Record<string, Uint8Array>>) {
   return Effect.promise(async () => {
+    await fs.rm(baseDir, { recursive: true, force: true })
     await fs.mkdir(baseDir, { recursive: true })
     await Promise.all(
       Object.entries(files).map(async ([rel, bytes]) => {
@@ -675,7 +533,7 @@ function writeVersionTree(baseDir: string, files: Readonly<Record<string, Uint8A
   })
 }
 
-function readVersionTree(baseDir: string) {
+function readDirectoryFiles(baseDir: string) {
   return Effect.promise(async () => {
     const out: Record<string, Uint8Array> = {}
     const walk = async (current: string, prefix: string): Promise<void> => {
@@ -692,34 +550,4 @@ function readVersionTree(baseDir: string) {
     await walk(baseDir, "")
     return out
   })
-}
-
-function escapeHtml(text: string) {
-  return text
-    .replaceAll("&", "&amp;")
-    .replaceAll("<", "&lt;")
-    .replaceAll(">", "&gt;")
-    .replaceAll('"', "&quot;")
-}
-
-function renderMarkdownShell(title: string, markdown: string) {
-  return `<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="dark light">
-<title>${escapeHtml(title)}</title>
-<style>
-  :root { color-scheme: dark light; }
-  body { margin: 0; padding: 48px 24px 80px; font: 15px/1.6 -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; max-width: 760px; margin-inline: auto; }
-  h1 { font-size: 24px; line-height: 1.25; margin: 0 0 20px; }
-  pre { white-space: pre-wrap; word-break: break-word; font: 13.5px/1.6 ui-monospace, "SF Mono", Menlo, monospace; margin: 0; }
-</style>
-</head>
-<body>
-<h1>${escapeHtml(title)}</h1>
-<pre>${escapeHtml(markdown)}</pre>
-</body>
-</html>`
 }

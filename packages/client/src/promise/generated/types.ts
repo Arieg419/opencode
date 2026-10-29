@@ -335,7 +335,7 @@ export type ScheduleStatus = "active" | "paused" | "done"
 
 export type ScheduleOutcome = "fired" | "late" | "checked" | "expired" | "skipped" | "disabled" | "failed"
 
-export type ArtifactCapability = "static" | "markdown" | "versions" | "server-code" | "sqlite" | "durable-objects"
+export type ArtifactCapability = "static" | "server-code" | "sqlite" | "durable-objects"
 
 export type ArtifactID = string
 
@@ -926,8 +926,6 @@ export type ArtifactInfo = {
   title: string
   entry: string
   url: string
-  version: number
-  metadata?: { [x: string]: string }
   time: ArtifactTime
 }
 
@@ -4553,7 +4551,6 @@ export type ExperimentalArtifactsCreateInput = {
   readonly entry?: string | undefined
   readonly provider?: string | undefined
   readonly sessionID?: string | undefined
-  readonly metadata?: { readonly [x: string]: string } | undefined
 }
 
 export type ExperimentalArtifactsCreateOutput = { location: LocationPublicRef; data: ArtifactInfo }
@@ -4571,9 +4568,7 @@ export type ExperimentalArtifactsUpdateInput = {
   readonly title?: string | undefined
   readonly files: { readonly [x: string]: string }
   readonly entry?: string | undefined
-  readonly baseVersion?: number | undefined
   readonly sessionID?: string | undefined
-  readonly metadata?: { readonly [x: string]: string } | undefined
 }
 
 export type ExperimentalArtifactsUpdateOutput = { location: LocationPublicRef; data: ArtifactInfo }
@@ -4588,8 +4583,6 @@ export type ExperimentalArtifactsDeleteOutput = void
 export type ExperimentalArtifactsViewInput = {
   readonly artifactID: string
   readonly location?: { readonly directory?: string | undefined } | undefined
-  readonly version?: number | undefined
-  readonly raw?: string | undefined
   readonly path: string
 }
 

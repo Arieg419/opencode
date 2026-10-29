@@ -2448,7 +2448,6 @@ export type ExperimentalArtifactsCreateInput = {
   readonly entry?: string | undefined
   readonly provider?: Artifact.ProviderID | undefined
   readonly sessionID?: Session.ID | undefined
-  readonly metadata?: { readonly [x: string]: string } | undefined
 }
 export type ExperimentalArtifactsCreateOutput = { readonly location: Location.PublicRef; readonly data: Artifact.Info }
 export type ExperimentalArtifactsCreateOperation<E = never> = (
@@ -2470,9 +2469,7 @@ export type ExperimentalArtifactsUpdateInput = {
   readonly title?: string | undefined
   readonly files: { readonly [x: string]: string }
   readonly entry?: string | undefined
-  readonly baseVersion?: number | undefined
   readonly sessionID?: Session.ID | undefined
-  readonly metadata?: { readonly [x: string]: string } | undefined
 }
 export type ExperimentalArtifactsUpdateOutput = { readonly location: Location.PublicRef; readonly data: Artifact.Info }
 export type ExperimentalArtifactsUpdateOperation<E = never> = (

@@ -291,38 +291,6 @@ export const make = Effect.fn("PluginHost.make")(function* (
         decisions: generate.decisions,
       },
       artifact: {
-        providers: () => response(artifacts.providers()),
-        list: (input) =>
-          response(
-            artifacts.list({
-              sessionID: input?.sessionID,
-              provider: input?.provider,
-            }),
-          ),
-        create: (input) =>
-          response(
-            artifacts.create({
-              title: input.title,
-              files: input.files,
-              entry: input.entry,
-              provider: input.provider,
-              sessionID: input.sessionID,
-              metadata: input.metadata,
-            }),
-          ),
-        get: (input) => response(artifacts.get(input.artifactID)),
-        update: (input) =>
-          response(
-            artifacts.update(input.artifactID, {
-              title: input.title,
-              files: input.files,
-              entry: input.entry,
-              baseVersion: input.baseVersion,
-              sessionID: input.sessionID,
-              metadata: input.metadata,
-            }),
-          ),
-        delete: (input) => artifacts.remove(input.artifactID),
         reload: artifacts.reload,
         transform: (callback) =>
           artifacts.transform((editor) => {

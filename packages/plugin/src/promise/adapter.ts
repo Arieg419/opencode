@@ -350,15 +350,6 @@ export function fromPromise(plugin: Plugin) {
               decisions: adaptApiMethod(GenerateEndpoints["generate.decisions"], host.experimental.generate.decisions),
             },
             artifact: {
-              providers: adaptApiMethod(
-                ExperimentalEndpoints["artifacts.providers"],
-                host.experimental.artifact.providers,
-              ),
-              list: adaptApiMethod(ExperimentalEndpoints["artifacts.list"], host.experimental.artifact.list),
-              create: adaptApiMethod(ExperimentalEndpoints["artifacts.create"], host.experimental.artifact.create),
-              get: adaptApiMethod(ExperimentalEndpoints["artifacts.get"], host.experimental.artifact.get),
-              update: adaptApiMethod(ExperimentalEndpoints["artifacts.update"], host.experimental.artifact.update),
-              delete: adaptApiMethod(ExperimentalEndpoints["artifacts.delete"], host.experimental.artifact.delete),
               reload: () => run(host.experimental.artifact.reload()),
               transform: (callback) =>
                 register(

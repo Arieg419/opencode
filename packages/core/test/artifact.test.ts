@@ -1,11 +1,9 @@
-import fs from "node:fs/promises"
 import path from "node:path"
 import { describe, expect } from "bun:test"
 import { Effect, Layer, Stream } from "effect"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { Artifact } from "@opencode/core/artifact"
 import { Config } from "@opencode/core/config"
-import { FileAccess } from "@opencode/core/file-access"
 import { Image } from "@opencode/core/image"
 import { Location } from "@opencode/core/location"
 import { Permission } from "@opencode/core/permission"
@@ -28,7 +26,6 @@ const toolPaths = [
   "opencode.artifact_read",
   "opencode.artifact_update",
   "opencode.artifact_delete",
-  "opencode.artifact_list",
 ]
 
 const buildLayer = (artifactsEnabled: boolean, dir: string) => {
@@ -44,16 +41,7 @@ const buildLayer = (artifactsEnabled: boolean, dir: string) => {
     : []
   const ref = Location.Ref.make({ directory: AbsolutePath.make(dir) })
   return AppNodeBuilder.build(
-    LayerNode.group([
-      Artifact.node,
-      Config.node,
-      FileAccess.node,
-      Global.node,
-      Location.node,
-      Permission.node,
-      Session.node,
-      Tool.node,
-    ]),
+    LayerNode.group([Artifact.node, Config.node, Global.node, Location.node, Permission.node, Session.node, Tool.node]),
     [
       Config.node.replace(Config.testLayer(entries)),
       Global.node.replace(Global.layerWith({ data: path.join(dir, ".data") })),
@@ -111,17 +99,9 @@ describe("experimental.artifacts service and tools", () => {
     }),
   )
 
-  it.live("registers custom providers, versions updates with baseVersion checks, and publishes disk folders", () =>
+  it.live("registers custom providers, routes overrides, and runs the 4 CRUD tools", () =>
     Effect.gen(function* () {
       const dir = (yield* tmpdirScoped("opencode-artifact-on-")).path
-      const bundleDir = path.join(dir, "bundle")
-      yield* Effect.promise(async () => {
-        await fs.mkdir(path.join(bundleDir, "assets"), { recursive: true })
-        await fs.mkdir(path.join(bundleDir, "node_modules", "ignored"), { recursive: true })
-        await fs.writeFile(path.join(bundleDir, "index.html"), "<!doctype html><script src='./assets/app.js'></script>")
-        await fs.writeFile(path.join(bundleDir, "assets", "app.js"), "console.log('v1')")
-        await fs.writeFile(path.join(bundleDir, "node_modules", "ignored", "x.js"), "ignored")
-      })
 
       yield* Effect.gen(function* () {
         const artifacts = yield* Artifact.Service
@@ -134,27 +114,27 @@ describe("experimental.artifacts service and tools", () => {
         const remoteStore = new Map<Artifact.ID, Record<string, Uint8Array>>()
         yield* artifacts.transform((editor) => {
           editor.add({
-            id: Artifact.ProviderID.make("seer"),
-            name: "Seer",
-            capabilities: ["static", "markdown", "versions"],
-            prompt: "Publishes versioned artifacts to Seer.",
+            id: Artifact.ProviderID.make("cloudflare"),
+            name: "Cloudflare",
+            capabilities: ["static", "server-code", "sqlite", "durable-objects"],
+            prompt: "Artifacts deploy to Cloudflare with SQLite and Durable Objects.",
             create: (input) =>
               Effect.sync(() => {
                 remoteStore.set(input.id, { ...input.files })
-                return { url: `seer://artifact/${input.id}` }
+                return { url: `https://cf.example.test/${input.id}/` }
               }),
             read: (id) => Effect.sync(() => remoteStore.get(id) ?? {}),
             update: (id, input) =>
               Effect.sync(() => {
                 remoteStore.set(id, { ...input.files })
-                return { url: `seer://artifact/${id}` }
+                return { url: `https://cf.example.test/${id}/` }
               }),
             delete: (id) =>
               Effect.sync(() => {
                 remoteStore.delete(id)
               }),
           })
-          editor.default.set(Artifact.ProviderID.make("seer"))
+          editor.default.set(Artifact.ProviderID.make("cloudflare"))
         })
 
         yield* registerToolPlugin(ArtifactTools.Plugin, {
@@ -166,26 +146,26 @@ describe("experimental.artifacts service and tools", () => {
         const rawTools = yield* registry.list()
         const createTool = rawTools.find((item) => item.id === "opencode_artifact_create")
         expect(createTool?.description).toContain(
-          "Default provider (seer [static, markdown, versions]): Publishes versioned artifacts to Seer.",
+          "Default provider (cloudflare [static, server-code, sqlite, durable-objects]): Artifacts deploy to Cloudflare with SQLite and Durable Objects.",
         )
         expect(createTool?.description).toContain(
-          "Other active providers (pass provider to override): local [static, markdown, versions].",
+          "Other active providers (pass provider to override): local [static].",
         )
 
         const createdInfo = (yield* callCodeMode(registry, session.id, "artifact_create", {
           title: "Flamegraph report",
-          dir: bundleDir,
-          metadata: { card: "t851" },
+          files: {
+            "index.html": "<!doctype html><script src='./assets/app.js'></script>",
+            "assets/app.js": "console.log('v1')",
+          },
         })) as Artifact.Info
 
         expect(createdInfo).toMatchObject({
-          provider: "seer",
+          provider: "cloudflare",
           sessionID: session.id,
           title: "Flamegraph report",
           entry: "index.html",
-          version: 1,
-          url: `seer://artifact/${createdInfo.id}`,
-          metadata: { card: "t851" },
+          url: `https://cf.example.test/${createdInfo.id}/`,
         })
 
         const content = (yield* callCodeMode(registry, session.id, "artifact_read", {
@@ -194,30 +174,23 @@ describe("experimental.artifacts service and tools", () => {
         expect(Object.keys(content.files).toSorted()).toEqual(["assets/app.js", "index.html"])
         expect(content.files["assets/app.js"]).toBe("console.log('v1')")
 
-        // Per-request provider override ("local") stores independently of default ("seer")
+        // Per-request provider override ("local") stores independently of default ("cloudflare")
         const localInfo = (yield* callCodeMode(registry, session.id, "artifact_create", {
           title: "Local scratch",
-          files: { "index.md": "# Notes" },
+          files: { "index.html": "<h1>Notes</h1>" },
           provider: "local",
         })) as Artifact.Info
         expect(localInfo.provider).toBe(Artifact.LocalProviderID)
-        expect(localInfo.version).toBe(1)
 
-        // Update increments version and checks baseVersion
+        // Update replaces files at the same ID and URL
         const updatedInfo = (yield* callCodeMode(registry, session.id, "artifact_update", {
           id: createdInfo.id,
-          baseVersion: 1,
           files: { "index.html": "<h1>v2</h1>" },
         })) as Artifact.Info
-        expect(updatedInfo.version).toBe(2)
+        expect(updatedInfo.url).toBe(createdInfo.url)
 
-        const stale = yield* artifacts
-          .update(createdInfo.id, {
-            baseVersion: 1,
-            files: { "index.html": "<h1>stale</h1>" },
-          })
-          .pipe(Effect.flip)
-        expect(stale).toBeInstanceOf(Artifact.ConflictError)
+        yield* callCodeMode(registry, session.id, "artifact_delete", { id: createdInfo.id })
+        expect(yield* artifacts.get(createdInfo.id).pipe(Effect.flip)).toBeInstanceOf(Artifact.NotFoundError)
 
         // Reject path traversal
         const traversal = yield* artifacts

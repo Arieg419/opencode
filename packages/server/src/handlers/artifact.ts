@@ -6,7 +6,6 @@ import { AbsolutePath } from "@opencode/core/schema"
 import { Session } from "@opencode/core/session"
 import {
   ArtifactNotFoundError,
-  ConflictError,
   FileNotFoundError,
   ForbiddenError,
   InvalidRequestError,
@@ -85,8 +84,6 @@ export const makeArtifact = Effect.gen(function* () {
           Effect.fail(
             new InvalidRequestError({ message: error.message, kind: "artifact_invalid", field: error.field }),
           ),
-        "Artifact.ConflictError": (error: Artifact.ConflictError) =>
-          Effect.fail(new ConflictError({ message: error.message, resource: error.artifactID })),
         "Artifact.ProviderError": (error: Artifact.ProviderError) =>
           Effect.fail(new ServiceUnavailableError({ message: error.message, service: error.providerID })),
         "Session.NotFoundError": (error: Session.NotFoundError) => Effect.fail(missingSession(error)),
@@ -184,7 +181,7 @@ export const makeArtifact = Effect.gen(function* () {
 
     view: (
       artifactID: Artifact.ID,
-      query: { readonly location?: { readonly directory?: string }; readonly version?: number; readonly raw?: string },
+      query: { readonly location?: { readonly directory?: string } },
       request: HttpServerRequest.HttpServerRequest,
     ) =>
       inLocation(
@@ -202,22 +199,16 @@ export const makeArtifact = Effect.gen(function* () {
             })
           }
           const subpath = extractViewSubpath(request.url, artifactID)
-          const file = yield* artifacts
-            .readLocalFile(artifactID, {
-              path: subpath,
-              version: query.version,
-              raw: query.raw === "1" || query.raw === "true",
-            })
-            .pipe(
-              Effect.catchTag("Artifact.FileMissingError", (error) =>
-                Effect.fail(new FileNotFoundError({ path: error.path, message: error.message })),
-              ),
-            )
+          const file = yield* artifacts.readLocalFile(artifactID, subpath).pipe(
+            Effect.catchTag("Artifact.FileMissingError", (error) =>
+              Effect.fail(new FileNotFoundError({ path: error.path, message: error.message })),
+            ),
+          )
           return HttpServerResponse.uint8Array(file.bytes, {
             status: 200,
             contentType: file.mime,
             headers: {
-              "cache-control": query.version === undefined ? "private, no-cache" : "private, max-age=31536000, immutable",
+              "cache-control": "private, no-cache",
               "x-content-type-options": "nosniff",
             },
           })

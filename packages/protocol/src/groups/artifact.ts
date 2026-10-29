@@ -1,12 +1,10 @@
 import { Artifact } from "@opencode/schema/artifact"
 import { Location } from "@opencode/schema/location"
-import { PositiveInt } from "@opencode/schema/schema"
 import { Session } from "@opencode/schema/session"
 import { Schema } from "effect"
 import { HttpApiEndpoint, HttpApiSchema, OpenApi } from "effect/http-api"
 import {
   ArtifactNotFoundError,
-  ConflictError,
   FileNotFoundError,
   ForbiddenError,
   InvalidRequestError,
@@ -26,12 +24,6 @@ const ListQuery = Schema.Struct({
   ...LocationQuery.fields,
   sessionID: Schema.optional(Session.ID),
   provider: Schema.optional(Artifact.ProviderID),
-})
-
-const ViewQuery = Schema.Struct({
-  ...LocationQuery.fields,
-  version: Schema.NumberFromString.pipe(Schema.decodeTo(PositiveInt), Schema.optional),
-  raw: Schema.optional(Schema.String),
 })
 
 const annotations = (identifier: string, summary: string, description: string) =>
@@ -88,12 +80,10 @@ export const ArtifactEndpoints = [
     query: LocationQuery,
     payload: Artifact.UpdateInput,
     success: Location.response(Artifact.Info),
-    error: [InvalidRequestError, ConflictError, SessionNotFoundError, ...itemErrors],
+    error: [InvalidRequestError, SessionNotFoundError, ...itemErrors],
   })
     .annotateMerge(locationQueryOpenApi)
-    .annotateMerge(
-      annotations("update", "Update artifact", "Publish a new version of an existing artifact at the same ID and URL."),
-    ),
+    .annotateMerge(annotations("update", "Update artifact", "Replace an artifact's files at the same ID and URL.")),
   HttpApiEndpoint.delete("artifacts.delete", "/api/experimental/artifacts/:artifactID", {
     params,
     query: LocationQuery,
@@ -104,12 +94,10 @@ export const ArtifactEndpoints = [
     .annotateMerge(annotations("delete", "Delete artifact", "Remove an artifact and its stored files.")),
   HttpApiEndpoint.get("artifacts.view", "/api/experimental/artifacts/:artifactID/view/*", {
     params,
-    query: ViewQuery,
+    query: LocationQuery,
     success: Schema.Uint8Array.pipe(HttpApiSchema.asUint8Array()),
     error: [FileNotFoundError, InvalidRequestError, ...itemErrors],
   })
     .annotateMerge(locationQueryOpenApi)
-    .annotateMerge(
-      annotations("view", "View local artifact", "Serve rendered HTML or static files from the local provider."),
-    ),
+    .annotateMerge(annotations("view", "View local artifact", "Serve HTML and static files from the local provider.")),
 ] as const

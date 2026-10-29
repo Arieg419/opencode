@@ -78,12 +78,6 @@ export function host(overrides: Overrides = {}): Plugin.Context {
         decisions: () => Effect.die("unused experimental.generate.decisions"),
       },
       artifact: {
-        providers: () => Effect.die("unused experimental.artifact.providers"),
-        list: () => Effect.die("unused experimental.artifact.list"),
-        create: () => Effect.die("unused experimental.artifact.create"),
-        get: () => Effect.die("unused experimental.artifact.get"),
-        update: () => Effect.die("unused experimental.artifact.update"),
-        delete: () => Effect.die("unused experimental.artifact.delete"),
         transform: () => Effect.die("unused experimental.artifact.transform"),
         reload: () => Effect.die("unused experimental.artifact.reload"),
       },
