@@ -38,6 +38,7 @@ import type { Command } from "@opencode/schema/command"
 import type { OpenCodeEvent } from "@opencode/protocol/groups/event"
 import type { Pty } from "@opencode/schema/pty"
 import type { Schedule } from "@opencode/schema/schedule"
+import type { Artifact } from "@opencode/schema/artifact"
 import type { Reference } from "@opencode/schema/reference"
 import type { Worktree } from "@opencode/schema/worktree"
 import type { Vcs } from "@opencode/schema/vcs"
@@ -2129,6 +2130,7 @@ export type EventSubscribeInput = {
         | "form.replied"
         | "form.cancelled"
         | "websearch.updated"
+        | "artifact.updated"
         | "session.status"
         | "session.idle"
         | "tui.prompt.append"
@@ -2415,6 +2417,77 @@ export type ExperimentalScheduleDeleteOperation<E = never> = (
   input: ExperimentalScheduleDeleteInput,
 ) => Effect.Effect<ExperimentalScheduleDeleteOutput, E>
 
+export type ExperimentalArtifactsProvidersInput = {
+  readonly location?: { readonly directory?: string | undefined } | undefined
+}
+export type ExperimentalArtifactsProvidersOutput = {
+  readonly location: Location.PublicRef
+  readonly data: ReadonlyArray<Artifact.Provider>
+}
+export type ExperimentalArtifactsProvidersOperation<E = never> = (
+  input?: ExperimentalArtifactsProvidersInput,
+) => Effect.Effect<ExperimentalArtifactsProvidersOutput, E>
+
+export type ExperimentalArtifactsListInput = {
+  readonly location?: { readonly directory?: string | undefined } | undefined
+  readonly sessionID?: Session.ID | undefined
+  readonly provider?: Artifact.ProviderID | undefined
+}
+export type ExperimentalArtifactsListOutput = {
+  readonly location: Location.PublicRef
+  readonly data: ReadonlyArray<Artifact.Info>
+}
+export type ExperimentalArtifactsListOperation<E = never> = (
+  input?: ExperimentalArtifactsListInput,
+) => Effect.Effect<ExperimentalArtifactsListOutput, E>
+
+export type ExperimentalArtifactsCreateInput = {
+  readonly location?: { readonly directory?: string | undefined } | undefined
+  readonly title: string
+  readonly files: { readonly [x: string]: string }
+  readonly entry?: string | undefined
+  readonly provider?: Artifact.ProviderID | undefined
+  readonly sessionID?: Session.ID | undefined
+  readonly metadata?: { readonly [x: string]: string } | undefined
+}
+export type ExperimentalArtifactsCreateOutput = { readonly location: Location.PublicRef; readonly data: Artifact.Info }
+export type ExperimentalArtifactsCreateOperation<E = never> = (
+  input: ExperimentalArtifactsCreateInput,
+) => Effect.Effect<ExperimentalArtifactsCreateOutput, E>
+
+export type ExperimentalArtifactsGetInput = {
+  readonly artifactID: Artifact.ID
+  readonly location?: { readonly directory?: string | undefined } | undefined
+}
+export type ExperimentalArtifactsGetOutput = { readonly location: Location.PublicRef; readonly data: Artifact.Content }
+export type ExperimentalArtifactsGetOperation<E = never> = (
+  input: ExperimentalArtifactsGetInput,
+) => Effect.Effect<ExperimentalArtifactsGetOutput, E>
+
+export type ExperimentalArtifactsUpdateInput = {
+  readonly artifactID: Artifact.ID
+  readonly location?: { readonly directory?: string | undefined } | undefined
+  readonly title?: string | undefined
+  readonly files: { readonly [x: string]: string }
+  readonly entry?: string | undefined
+  readonly baseVersion?: number | undefined
+  readonly sessionID?: Session.ID | undefined
+  readonly metadata?: { readonly [x: string]: string } | undefined
+}
+export type ExperimentalArtifactsUpdateOutput = { readonly location: Location.PublicRef; readonly data: Artifact.Info }
+export type ExperimentalArtifactsUpdateOperation<E = never> = (
+  input: ExperimentalArtifactsUpdateInput,
+) => Effect.Effect<ExperimentalArtifactsUpdateOutput, E>
+
+export type ExperimentalArtifactsDeleteInput = {
+  readonly artifactID: Artifact.ID
+  readonly location?: { readonly directory?: string | undefined } | undefined
+}
+export type ExperimentalArtifactsDeleteOutput = void
+export type ExperimentalArtifactsDeleteOperation<E = never> = (
+  input: ExperimentalArtifactsDeleteInput,
+) => Effect.Effect<ExperimentalArtifactsDeleteOutput, E>
+
 export interface ExperimentalApi<E = never> {
   readonly persistentPty: {
     readonly read: ExperimentalPersistentPtyReadOperation<E>
@@ -2435,6 +2508,14 @@ export interface ExperimentalApi<E = never> {
     readonly pause: ExperimentalSchedulePauseOperation<E>
     readonly resume: ExperimentalScheduleResumeOperation<E>
     readonly delete: ExperimentalScheduleDeleteOperation<E>
+  }
+  readonly artifacts: {
+    readonly providers: ExperimentalArtifactsProvidersOperation<E>
+    readonly list: ExperimentalArtifactsListOperation<E>
+    readonly create: ExperimentalArtifactsCreateOperation<E>
+    readonly get: ExperimentalArtifactsGetOperation<E>
+    readonly update: ExperimentalArtifactsUpdateOperation<E>
+    readonly delete: ExperimentalArtifactsDeleteOperation<E>
   }
 }
 

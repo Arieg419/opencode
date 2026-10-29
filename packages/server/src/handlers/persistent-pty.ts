@@ -17,6 +17,7 @@ import { HttpApiBuilder, HttpApiSchema } from "effect/http-api"
 import { Socket } from "effect/socket"
 import { Api } from "../api"
 import { CorsConfig, isAllowedRequestOrigin } from "../cors"
+import { makeArtifact } from "./artifact"
 import { makeMediaGet } from "./media"
 import { type Outbound, runPtySocket } from "./pty-socket"
 import { makeSchedule } from "./schedule"
@@ -26,11 +27,19 @@ export const PersistentPtyHandler = HttpApiBuilder.group(Api, "server.experiment
     const tickets = yield* PtyTicket.Service
     const cors = yield* CorsConfig
     const pty = yield* PersistentPty.Service
+    const artifact = yield* makeArtifact
     const mediaGet = yield* makeMediaGet
     const schedule = yield* makeSchedule
 
     return handlers
       .handleRaw("media.get", (ctx) => mediaGet(ctx.params.hash, ctx.request))
+      .handle("artifacts.providers", (ctx) => artifact.providers(ctx.query, ctx.request))
+      .handle("artifacts.list", (ctx) => artifact.list(ctx.query, ctx.request))
+      .handle("artifacts.create", (ctx) => artifact.create(ctx.query, ctx.payload, ctx.request))
+      .handle("artifacts.get", (ctx) => artifact.get(ctx.params.artifactID, ctx.query, ctx.request))
+      .handle("artifacts.update", (ctx) => artifact.update(ctx.params.artifactID, ctx.query, ctx.payload, ctx.request))
+      .handle("artifacts.delete", (ctx) => artifact.remove(ctx.params.artifactID, ctx.query, ctx.request))
+      .handleRaw("artifacts.view", (ctx) => artifact.view(ctx.params.artifactID, ctx.query, ctx.request))
       .handle("schedule.create", (ctx) => schedule.create(ctx.payload))
       .handle("schedule.list", (ctx) => schedule.list(ctx.query.sessionID))
       .handle("schedule.get", (ctx) => schedule.get(ctx.params.scheduleID))

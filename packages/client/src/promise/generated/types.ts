@@ -335,6 +335,12 @@ export type ScheduleStatus = "active" | "paused" | "done"
 
 export type ScheduleOutcome = "fired" | "late" | "checked" | "expired" | "skipped" | "disabled" | "failed"
 
+export type ArtifactCapability = "static" | "markdown" | "versions" | "server-code" | "sqlite" | "durable-objects"
+
+export type ArtifactID = string
+
+export type ArtifactTime = { created: number; updated: number }
+
 export type ReferenceGitSource = { type: "git"; repository: string; branch?: string }
 
 export type VcsBranch = { current?: string; default?: string }
@@ -910,6 +916,20 @@ export type ScheduleWhenEvery = { type: "every"; every: ScheduleDuration; tz?: s
 export type ScheduleCondition = ScheduleConditionShell
 
 export type ScheduleAction = ScheduleActionPrompt
+
+export type ArtifactProvider = { id: string; name: string; capabilities: Array<ArtifactCapability>; default: boolean }
+
+export type ArtifactInfo = {
+  id: ArtifactID
+  provider: string
+  sessionID?: SessionID
+  title: string
+  entry: string
+  url: string
+  version: number
+  metadata?: { [x: string]: string }
+  time: ArtifactTime
+}
 
 export type VcsInfo = { provider?: string; branch: VcsBranch }
 
@@ -1906,6 +1926,15 @@ export type WebsearchUpdated = {
   data: {}
 }
 
+export type ArtifactUpdated = {
+  id: EventID
+  created: number
+  metadata?: { [x: string]: any }
+  type: "artifact.updated"
+  location?: LocationRef
+  data: {}
+}
+
 export type SessionStatusUpdated = {
   id: EventID
   created: number
@@ -2147,6 +2176,8 @@ export type FormReplied = {
 }
 
 export type ScheduleWhen = ScheduleWhenIn | ScheduleWhenAt | ScheduleWhenEvery | ScheduleWhenCron
+
+export type ArtifactContent = { info: ArtifactInfo; files: { [x: string]: string } }
 
 export type SessionInboxMove = {
   id: SessionMessageID
@@ -2461,6 +2492,7 @@ export type ConfigEntry =
           media_blob?: boolean
           image_generate?: boolean | { model?: string | { providerID: string; model: string; variant?: string } }
           schedules?: boolean
+          artifacts?: boolean
           subagent_depth?: number
           location_idle_timeout?: string | false
           policies?: Array<{
@@ -2832,6 +2864,7 @@ export type V2Event =
   | FormReplied
   | FormCancelled
   | WebsearchUpdated
+  | ArtifactUpdated
   | SessionStatusUpdated
   | SessionIdle
   | TuiPromptAppend
@@ -3127,6 +3160,14 @@ export type ScheduleNotFoundError = {
 }
 export const isScheduleNotFoundError = (value: unknown): value is ScheduleNotFoundError =>
   typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "ScheduleNotFoundError"
+
+export type ArtifactNotFoundError = {
+  readonly _tag: "ArtifactNotFoundError"
+  readonly artifactID: string
+  readonly message: string
+}
+export const isArtifactNotFoundError = (value: unknown): value is ArtifactNotFoundError =>
+  typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "ArtifactNotFoundError"
 
 export type ShellNotFoundError = { readonly _tag: "ShellNotFoundError"; readonly id: string; readonly message: string }
 export const isShellNotFoundError = (value: unknown): value is ShellNotFoundError =>
@@ -4304,6 +4345,7 @@ export type EventSubscribeInput = {
         | "form.replied"
         | "form.cancelled"
         | "websearch.updated"
+        | "artifact.updated"
         | "session.status"
         | "session.idle"
         | "tui.prompt.append"
@@ -4489,6 +4531,69 @@ export type ExperimentalScheduleResumeOutput = { data: ScheduleInfo }["data"]
 export type ExperimentalScheduleDeleteInput = { readonly scheduleID: string }
 
 export type ExperimentalScheduleDeleteOutput = void
+
+export type ExperimentalArtifactsProvidersInput = {
+  readonly location?: { readonly directory?: string | undefined } | undefined
+}
+
+export type ExperimentalArtifactsProvidersOutput = { location: LocationPublicRef; data: Array<ArtifactProvider> }
+
+export type ExperimentalArtifactsListInput = {
+  readonly location?: { readonly directory?: string | undefined } | undefined
+  readonly sessionID?: string | undefined
+  readonly provider?: string | undefined
+}
+
+export type ExperimentalArtifactsListOutput = { location: LocationPublicRef; data: Array<ArtifactInfo> }
+
+export type ExperimentalArtifactsCreateInput = {
+  readonly location?: { readonly directory?: string | undefined } | undefined
+  readonly title: string
+  readonly files: { readonly [x: string]: string }
+  readonly entry?: string | undefined
+  readonly provider?: string | undefined
+  readonly sessionID?: string | undefined
+  readonly metadata?: { readonly [x: string]: string } | undefined
+}
+
+export type ExperimentalArtifactsCreateOutput = { location: LocationPublicRef; data: ArtifactInfo }
+
+export type ExperimentalArtifactsGetInput = {
+  readonly artifactID: string
+  readonly location?: { readonly directory?: string | undefined } | undefined
+}
+
+export type ExperimentalArtifactsGetOutput = { location: LocationPublicRef; data: ArtifactContent }
+
+export type ExperimentalArtifactsUpdateInput = {
+  readonly artifactID: string
+  readonly location?: { readonly directory?: string | undefined } | undefined
+  readonly title?: string | undefined
+  readonly files: { readonly [x: string]: string }
+  readonly entry?: string | undefined
+  readonly baseVersion?: number | undefined
+  readonly sessionID?: string | undefined
+  readonly metadata?: { readonly [x: string]: string } | undefined
+}
+
+export type ExperimentalArtifactsUpdateOutput = { location: LocationPublicRef; data: ArtifactInfo }
+
+export type ExperimentalArtifactsDeleteInput = {
+  readonly artifactID: string
+  readonly location?: { readonly directory?: string | undefined } | undefined
+}
+
+export type ExperimentalArtifactsDeleteOutput = void
+
+export type ExperimentalArtifactsViewInput = {
+  readonly artifactID: string
+  readonly location?: { readonly directory?: string | undefined } | undefined
+  readonly version?: number | undefined
+  readonly raw?: string | undefined
+  readonly path: string
+}
+
+export type ExperimentalArtifactsViewOutput = globalThis.Uint8Array
 
 export type ShellListInput = { readonly location?: { readonly directory?: string | undefined } | undefined }
 

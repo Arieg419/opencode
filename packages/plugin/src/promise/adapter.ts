@@ -349,6 +349,38 @@ export function fromPromise(plugin: Plugin) {
               image: adaptApiMethod(GenerateEndpoints["generate.image"], host.experimental.generate.image),
               decisions: adaptApiMethod(GenerateEndpoints["generate.decisions"], host.experimental.generate.decisions),
             },
+            artifact: {
+              providers: adaptApiMethod(
+                ExperimentalEndpoints["artifacts.providers"],
+                host.experimental.artifact.providers,
+              ),
+              list: adaptApiMethod(ExperimentalEndpoints["artifacts.list"], host.experimental.artifact.list),
+              create: adaptApiMethod(ExperimentalEndpoints["artifacts.create"], host.experimental.artifact.create),
+              get: adaptApiMethod(ExperimentalEndpoints["artifacts.get"], host.experimental.artifact.get),
+              update: adaptApiMethod(ExperimentalEndpoints["artifacts.update"], host.experimental.artifact.update),
+              delete: adaptApiMethod(ExperimentalEndpoints["artifacts.delete"], host.experimental.artifact.delete),
+              reload: () => run(host.experimental.artifact.reload()),
+              transform: (callback) =>
+                register(
+                  host.experimental.artifact.transform((editor) => {
+                    callback({
+                      add: (definition) =>
+                        editor.add({
+                          id: definition.id,
+                          name: definition.name,
+                          capabilities: definition.capabilities,
+                          prompt: definition.prompt,
+                          create: (input) => attempt((signal) => definition.create(input, { signal })),
+                          read: (id) => attempt((signal) => definition.read(id, { signal })),
+                          update: (id, input) => attempt((signal) => definition.update(id, input, { signal })),
+                          delete: (id) => attempt((signal) => definition.delete(id, { signal })),
+                        }),
+                      remove: editor.remove,
+                      default: editor.default,
+                    })
+                  }),
+                ),
+            },
           },
           generate: {
             text: adaptApiMethod(GenerateEndpoints["generate.text"], host.generate.text),

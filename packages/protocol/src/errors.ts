@@ -333,3 +333,12 @@ export class ScheduleNotFoundError extends Schema.TaggedError<ScheduleNotFoundEr
   },
   { httpApiStatus: 404 },
 ) {}
+
+export class ArtifactNotFoundError extends Schema.TaggedError<ArtifactNotFoundError>()(
+  "ArtifactNotFoundError",
+  {
+    artifactID: Schema.String,
+    message: Schema.String,
+  },
+  { httpApiStatus: 404 },
+) {}
