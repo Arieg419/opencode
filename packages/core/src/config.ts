@@ -28,11 +28,8 @@ export function latest<K extends keyof Info>(entries: readonly Entry[], key: K):
 }
 
 export interface Interface {
-  /**
-   * Returns location config documents and discovery sources from lowest to highest priority. With `project: false`,
-   * leaves out documents found in the location's project directories, keeping what every location shares.
-   */
-  readonly entries: (options?: { readonly project?: boolean }) => Effect.Effect<Entry[]>
+  /** Returns location config documents and discovery sources from lowest to highest priority. */
+  readonly entries: () => Effect.Effect<Entry[]>
   /** Compatibility roots consumed by internal compatibility plugins. */
   readonly compatibility?: () => Effect.Effect<{
     readonly claude: readonly AbsolutePath[]
@@ -127,7 +124,6 @@ export const layer = (options?: Options) =>
       const wellknown = yield* WellKnown.Service
       const processes = yield* AppProcess.Service
       const integrations = new Map<string, ConfigIntegration.Document>()
-      const fromProject = new WeakSet<Entry>()
       // Integrations set their documents from outside this layer, so their reloads run with its services.
       const context = yield* Effect.context<FSUtil.Service | Global.Service | Location.Service>()
       const reloadLock = Semaphore.makeUnsafe(1)
@@ -307,7 +303,6 @@ export const layer = (options?: Options) =>
           Effect.orDie,
           Effect.map((entries) => entries.flat()),
         )
-        for (const entry of [...direct, ...projectSupplementary]) fromProject.add(entry)
         return [
           ...managedPolicies,
           ...integrations.values(),
@@ -434,8 +429,8 @@ export const layer = (options?: Options) =>
       )
 
       return Service.of({
-        entries: Effect.fnUntraced(function* (options) {
-          return options?.project === false ? configs.filter((entry) => !fromProject.has(entry)) : configs
+        entries: Effect.fnUntraced(function* () {
+          return configs
         }),
         compatibility: () =>
           Effect.all({

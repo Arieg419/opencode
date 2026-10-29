@@ -3,10 +3,12 @@ export * as SessionRestart from "./restart.js"
 import { Context, Effect, Layer } from "effect"
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
 import { Bus } from "../../bus.js"
+import { Database } from "../../database/database.js"
 import { Job } from "../../job.js"
 import { Session } from "../../session.js"
 import { SessionEvent } from "../event.js"
 import { SessionExecution } from "../execution.js"
+import { SessionInbox } from "../inbox.js"
 import { SessionSchema } from "../schema.js"
 import { SessionStore } from "../store.js"
 import { ImageNotice } from "../../image/notice.js"
@@ -74,6 +76,7 @@ export const layer = (options?: Options) =>
       const jobs = yield* Job.Service
       const sessions = yield* Session.Service
       const queue = yield* SubagentQueue.Service
+      const db = (yield* Database.Service).db
       const scope = yield* Effect.scope
       const maxAttempts = options?.maxAttempts ?? DEFAULT_MAX_ATTEMPTS
 
@@ -200,16 +203,7 @@ export const layer = (options?: Options) =>
           return
         }
         if (yield* execution.isActive(recovery.childSessionID)) return
-        // Only a child whose turn started gets the restart notice and spends a resume attempt. One still waiting
-        // for a queue slot never claimed a turn, so it just takes its first one.
-        const started = yield* store.isClaimed(recovery.childSessionID)
-        if (started && !(yield* prepareResume(recovery.childSessionID))) {
-          yield* notify({ status: "error", error: RESUME_EXHAUSTED.message })
-          return
-        }
-
-        const run = execution.resume(recovery.childSessionID).pipe(
-          Effect.andThen(store.context(recovery.childSessionID)),
+        const output = store.context(recovery.childSessionID).pipe(
           Effect.map((messages) => {
             const assistant = messages.findLast(
               (message) =>
@@ -218,6 +212,28 @@ export const layer = (options?: Options) =>
             return SubagentCompletion.text(assistant)
           }),
         )
+        // Only a child whose turn was in flight gets the restart notice and spends a resume attempt.
+        const started = yield* store.isClaimed(recovery.childSessionID)
+        if (started && !(yield* prepareResume(recovery.childSessionID))) {
+          yield* notify({ status: "error", error: RESUME_EXHAUSTED.message })
+          return
+        }
+        // With no turn in flight and nothing waiting, its turn ended before the job recorded it, and resuming would
+        // send a conversation that ends on the assistant. Deliver that reply instead. A child with input waiting,
+        // such as one still in line for a slot, takes its turn below.
+        if (!started && !(yield* SessionInbox.has(db, recovery.childSessionID, "input"))) {
+          yield* notify(
+            yield* output.pipe(
+              Effect.match({
+                onSuccess: (text) => ({ status: "completed" as const, output: text }),
+                onFailure: (error) => ({ status: "error" as const, error: error.message }),
+              }),
+            ),
+          )
+          return
+        }
+
+        const run = execution.resume(recovery.childSessionID).pipe(Effect.andThen(output))
         // Recovered children, started or still queued, line up again in recovery order.
         const limit = yield* sessions.get(recovery.parentSessionID).pipe(
           Effect.flatMap(queue.limit),
@@ -285,5 +301,5 @@ export const layer = (options?: Options) =>
 export const node = makeGlobalNode({
   service: Service,
   layer: layer(),
-  deps: [SessionStore.node, SessionExecution.node, Bus.node, Job.node, Session.node, SubagentQueue.node],
+  deps: [SessionStore.node, SessionExecution.node, Bus.node, Database.node, Job.node, Session.node, SubagentQueue.node],
 })

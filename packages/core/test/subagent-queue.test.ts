@@ -392,8 +392,9 @@ describe("SubagentQueue", () => {
       const children = yield* Effect.forEach([1, 2], (n) =>
         sessions.create({ parentID: root.id, title: `recovered ${n}`, agent: Agent.ID.make("reviewer") }),
       )
-      // The first child was mid-turn at the restart; the second was still waiting for a slot.
+      // The first child was mid-turn at the restart; the second was still waiting for a slot with its prompt held.
       yield* (yield* SessionStore.Service).claim(children[0]!.id)
+      yield* sessions.prompt({ sessionID: children[1]!.id, text: "review", resume: false, delivery: "queue" })
       const notices = (sessionID: Session.ID) =>
         sessions
           .context(sessionID)

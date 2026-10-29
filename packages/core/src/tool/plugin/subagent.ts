@@ -76,6 +76,17 @@ export const Plugin = {
     const models = yield* Model.Service
     const subagents = yield* SubagentJob.Service
     const queue = yield* SubagentQueue.Service
+    const warned = new Set<string>()
+    // The cap is server-wide, so a project can't set it; say so once per file that tries.
+    const warnIgnoredCap = Effect.fnUntraced(function* () {
+      for (const entry of yield* config.entries()) {
+        if (entry.type !== "document" || entry.info.experimental?.subagent_concurrency === undefined) continue
+        const source = entry.path ?? "inline config"
+        if (queue.files.includes(source) || warned.has(source)) continue
+        warned.add(source)
+        yield* Effect.logWarning("experimental.subagent_concurrency is only read from global config", { source })
+      }
+    })
 
     const resolveModel = Effect.fn("SubagentTool.resolveModel")(function* (input: string) {
       const ref = yield* Effect.try({
@@ -209,6 +220,7 @@ export const Plugin = {
                   ))
 
               const background = input.background === true
+              if (existing === undefined && parent.parentID === undefined) yield* warnIgnoredCap()
               const cap = existing === undefined ? yield* queue.limit(parent) : undefined
               // A follow-up to a child still waiting for a slot joins its line instead of starting it.
               const held =

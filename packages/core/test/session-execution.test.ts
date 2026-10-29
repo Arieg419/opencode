@@ -6,8 +6,12 @@ import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Bus } from "@opencode/core/bus"
 import { Instance } from "@opencode/core/instance/service"
+import { Agent } from "@opencode/core/agent"
 import { Job } from "@opencode/core/job"
 import { KV } from "@opencode/core/kv"
+import { Model } from "@opencode/core/model"
+import { Provider } from "@opencode/core/provider"
+import { Money } from "@opencode/schema/money"
 import { LocationServiceMap } from "@opencode/core/location-service-map"
 import type { LocationServices } from "@opencode/core/location-services"
 import { Project } from "@opencode/core/project"
@@ -955,6 +959,77 @@ describe("SessionRestart background recovery", () => {
     }),
   )
 
+  it.effect("delivers a recovered subagent's finished turn instead of sending it to the model again", () =>
+    Effect.gen(function* () {
+      const database = yield* Database.Service
+      const jobs = yield* Job.Service
+      const bus = yield* Bus.Service
+      const parent = Session.ID.make("ses_subagent_ended_parent")
+      const child = Session.ID.make("ses_subagent_ended_child")
+      yield* seedSessions(database, [parent])
+      yield* seedSessions(database, [child], { parent_id: parent })
+      // The child's turn ended and released its claim, but the crash came before its job recorded the result.
+      const assistantMessageID = SessionMessage.ID.create()
+      yield* bus.publish(SessionEvent.Step.Started, {
+        sessionID: child,
+        assistantMessageID,
+        agent: Agent.ID.make("explore"),
+        model: Model.Ref.make({ id: Model.ID.make("child"), providerID: Provider.ID.make("test") }),
+        started: 0,
+      })
+      yield* bus.publish(SessionEvent.Text.Started, { sessionID: child, assistantMessageID, ordinal: 0 })
+      yield* bus.publish(SessionEvent.Text.Ended, {
+        sessionID: child,
+        assistantMessageID,
+        ordinal: 0,
+        text: "Finished review",
+      })
+      yield* bus.publish(SessionEvent.Step.Ended, {
+        sessionID: child,
+        assistantMessageID,
+        finish: "stop",
+        cost: Money.USD.zero,
+        tokens: { input: 0, output: 0, reasoning: 0, cache: { read: 0, write: 0 } },
+      })
+      yield* jobs.start({
+        id: child,
+        type: "subagent",
+        recovery: {
+          kind: "subagent",
+          parentSessionID: parent,
+          childSessionID: child,
+          agent: "explore",
+          description: "Ended review",
+        },
+        run: Effect.never,
+      })
+      yield* jobs.background(child)
+
+      const parentWoken = yield* Deferred.make<void>()
+      const drained: Session.ID[] = []
+      const scope = yield* Scope.make()
+      yield* Effect.addFinalizer(() => Scope.close(scope, Exit.void))
+      const restarted = yield* Job.make.pipe(Effect.provideService(Scope.Scope, scope))
+      const context = yield* buildExecution(
+        scope,
+        ({ sessionID }) =>
+          Effect.sync(() => void drained.push(sessionID)).pipe(
+            Effect.andThen(sessionID === parent ? Deferred.succeed(parentWoken, undefined) : Effect.void),
+          ),
+        undefined,
+        restarted,
+      )
+      yield* Context.get(context, SessionRestart.Service).resumeSuspendedSessions
+      yield* Deferred.await(parentWoken)
+
+      expect(drained).toEqual([parent])
+      expect(yield* SessionInbox.list(database.db, parent)).toMatchObject([
+        { payload: { text: expect.stringContaining("Finished review"), metadata: { state: "completed" } } },
+      ])
+      expect(yield* restarted.pendingBackground).toEqual([])
+    }),
+  )
+
   it.effect("retains a subagent completion marker when synthetic admission conflicts", () =>
     Effect.gen(function* () {
       const database = yield* Database.Service
@@ -1422,17 +1497,7 @@ function buildExecution(
         Layer.provide(Layer.succeed(Bus.Service, bus)),
         Layer.provide(Layer.succeed(SessionStore.Service, store)),
         Layer.provide(Layer.succeed(Job.Service, jobs)),
-        // No cap here: reading it would boot each parent's full Location graph, which fetches the model catalog.
-        Layer.provide(
-          Layer.succeed(
-            SubagentQueue.Service,
-            SubagentQueue.Service.of({
-              limit: () => Effect.succeed(undefined),
-              hold: (_, effect) => effect,
-              waiting: () => Effect.succeed(undefined),
-            }),
-          ),
-        ),
+        Layer.provide(AppNodeBuilder.build(SubagentQueue.node)),
         // Do not reuse the outer harness's selector with its already-captured Location map.
         Layer.provide(
           AppNodeBuilder.build(Instance.node, [LocationServiceMap.node.replace(locations)]).pipe(Layer.fresh),
