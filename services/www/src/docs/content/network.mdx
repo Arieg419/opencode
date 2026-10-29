@@ -72,6 +72,48 @@ opencode service set env NODE_EXTRA_CA_CERTS /etc/company/ca.pem
 opencode service start
 ```
 
+## Client certificates
+
+When a gateway requires mutual TLS, list the hosts that should receive a client certificate under
+`network.client_certificates`. OpenCode presents the matching certificate on HTTPS requests to those hosts, such as model
+requests and model catalogs, and to no other host.
+
+```jsonc title="/etc/opencode/opencode.json"
+{
+  "$schema": "https://opencode.ai/config.json",
+  "network": {
+    "client_certificates": [
+      {
+        "hosts": ["llm.company.example", "*.ai.company.example"],
+        "cert": "/etc/company/opencode-client.pem",
+        "key": "/etc/company/opencode-client.key",
+        "passphrase": "{file:/etc/company/opencode-client.pass}",
+      },
+    ],
+  },
+}
+```
+
+- `hosts` are matched against the request's hostname without the port. `*` and `?` are wildcards, so `*.company.example`
+  matches `llm.company.example` but not `company.example`.
+- `cert` and `key` are PEM files. Paths can be absolute, start with `~/`, or be relative to the configuration file.
+  OpenCode reads the files for each request, so a rotated certificate applies without a restart.
+- `passphrase` is only needed for an encrypted key. Use `{file:...}` or `{env:...}` to keep it out of the file.
+- The first entry whose `hosts` match is used.
+
+This is a machine setting, so OpenCode reads it only from managed and global configuration: macOS managed preferences
+(`ai.opencode.managed`), the system directory (`/etc/opencode`, `/Library/Application Support/opencode`,
+`%ProgramData%\opencode`), and the global `~/.config/opencode/opencode.json(c)`. The highest-ranked of these that sets
+`network.client_certificates` replaces the others, and `network` in project configuration is ignored. Changes apply
+within a minute.
+
+Requests that present a client certificate do not follow redirects, because a redirect would present it to the host the
+server names. The server's own certificate is still verified against the system trust store; add a private certificate
+authority with `NODE_EXTRA_CA_CERTS`, described in [Certificates](#certificates).
+
+Client certificates are not yet presented by remote MCP servers or by the WebSocket transport, and the Node.js build of
+OpenCode fails requests to a matching host instead of sending them without the certificate.
+
 ## Foreground
 
 `--standalone` and `serve` use the environment of their own process. `opencode service set env` does not configure these
