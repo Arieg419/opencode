@@ -112,21 +112,22 @@ export const fakeDaemon = Effect.fn(function* (features?: string[]) {
   const terminals: Array<ReturnType<typeof terminal> & { user_title?: string | null }> = []
   const failTerminate = new Set<string>()
   const ops: string[] = []
+  let nextID = 1
   yield* listen(socket, (connection, request) => {
     ops.push(String(request.op))
     if (request.op === "ping") return features ? { ...pong, features } : pong
     if (request.op === "list") return { type: "terminals", terminals }
     if (request.op === "create") {
-      const created = terminal(terminals.length + 1, String(request.group_id))
+      const created = terminal(nextID++, String(request.group_id))
       terminals.push(features ? { ...created, user_title: null } : created)
       return { type: "created", terminal: created }
     }
+    if (request.op === "control") return { type: "ok" }
     if (request.op === "terminate") {
       if (failTerminate.has(`pty_persistent_${request.id}`)) return { type: "error", message: "terminate failed" }
-      terminals.splice(
-        terminals.findIndex((item) => item.id === request.id),
-        1,
-      )
+      const index = terminals.findIndex((item) => item.id === request.id)
+      if (index === -1) return { type: "error", message: `terminal not found: ${String(request.id)}` }
+      terminals.splice(index, 1)
       return { type: "ok" }
     }
     if (request.op === "rename" && features?.includes("rename")) {
