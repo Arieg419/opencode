@@ -352,7 +352,10 @@ describe("ModelsDev Service", () => {
                 },
                 images: {
                   base_url: "https://api.example.test/v1",
-                  sdk: { aisdk: "@acme/ai-sdk-provider", opencodeai: "@opencode/ai/protocols/openai-images" },
+                  sdk: {
+                    aisdk: "@acme/ai-sdk-provider",
+                    opencodeai: "@opencode/ai/providers/openai-compatible/images",
+                  },
                 },
               },
               experimental: { modes: { fast: {} } },
@@ -378,7 +381,7 @@ describe("ModelsDev Service", () => {
         ["acme-image-fast", "image"],
       ])
       expect(acme?.models[1]?.capabilities).toMatchObject({ input: ["text", "image", "pdf"], output: ["image"] })
-      expect(acme?.models[1]?.package).toBe("@opencode/ai/protocols/openai-images")
+      expect(acme?.models[1]?.package).toBe("@opencode/ai/providers/openai-compatible/images")
       // Without an opencode package a non-chat model is left out ("acme-sdk-image" above).
     }),
   )
@@ -436,11 +439,109 @@ describe("ModelsDev Service", () => {
     }),
   )
 
+  it.effect("skips APIs whose opencode entrypoint this build doesn't have", () =>
+    Effect.gen(function* () {
+      const unknown = (path: string) => ({
+        base_url: "https://new.acme.test/v1",
+        sdk: { opencodeai: `@opencode/ai/providers/acme/${path}` },
+      })
+      const image = (id: string, api: Record<string, unknown>) =>
+        sourceModel(id, { type: "image", modalities: { input: ["text"], output: ["image/png"] }, api })
+      const [acme] = yield* ModelsDev.decodeSnapshot(
+        JSON.stringify({
+          acme: {
+            ...fixture.acme,
+            models: {
+              next: sourceModel("next", {
+                api: { "new-api": unknown("new-api"), ...sourceModel("next").api },
+              }),
+              "sdk-fallback": sourceModel("sdk-fallback", {
+                api: {
+                  "new-api": {
+                    base_url: "https://claude.acme.test/v1",
+                    sdk: { aisdk: "@ai-sdk/anthropic", opencodeai: "@opencode/ai/providers/acme/new-api" },
+                  },
+                },
+              }),
+              "unknown-only": sourceModel("unknown-only", { api: { "new-api": unknown("new-api") } }),
+              "image-unknown": image("image-unknown", { images: unknown("images") }),
+              "image-known": image("image-known", {
+                images: unknown("images"),
+                "openai-images": {
+                  base_url: "https://api.acme.test/v1",
+                  sdk: { opencodeai: "@opencode/ai/providers/openai-compatible/images" },
+                },
+              }),
+            },
+          },
+        }),
+      )
+      const model = (id: string) => acme?.models.find((item) => item.id === id)
+      expect(acme?.models.map((item) => item.id)).toEqual(
+        ["next", "sdk-fallback", "image-known"].map((id) => Model.ID.make(id)),
+      )
+      expect(acme?.info).toMatchObject({
+        package: "@opencode/ai/providers/openai-compatible",
+        settings: { baseURL: "https://api.example.test/v1" },
+      })
+      expect(model("next")).toMatchObject({ package: undefined, settings: { provider: "acme" } })
+      expect(model("sdk-fallback")).toMatchObject({
+        package: "@opencode/ai/providers/anthropic",
+        settings: { baseURL: "https://claude.acme.test/v1" },
+      })
+      expect(model("image-known")).toMatchObject({
+        package: "@opencode/ai/providers/openai-compatible/images",
+        settings: { baseURL: "https://api.acme.test/v1" },
+      })
+    }),
+  )
+
+  it.effect("skips non-chat models whose only opencode package serves another type", () =>
+    Effect.gen(function* () {
+      const api = (opencodeai: string) => ({
+        "chat-completions": { base_url: "https://api.acme.test/v1", sdk: { opencodeai } },
+      })
+      const chatPackage = "@opencode/ai/providers/openai-compatible"
+      const [acme] = yield* ModelsDev.decodeSnapshot(
+        JSON.stringify({
+          acme: {
+            ...fixture.acme,
+            models: {
+              chat: sourceModel("chat", { api: api(chatPackage) }),
+              "image-chat-only": sourceModel("image-chat-only", { type: "image", api: api(chatPackage) }),
+              image: sourceModel("image", {
+                type: "image",
+                api: {
+                  ...api(chatPackage),
+                  images: api("@opencode/ai/providers/openai-compatible/images")["chat-completions"],
+                },
+              }),
+              "decision-chat-only": sourceModel("decision-chat-only", { type: "decision", api: api(chatPackage) }),
+              "decision-image-only": sourceModel("decision-image-only", {
+                type: "decision",
+                api: api("@opencode/ai/providers/openrouter/images"),
+              }),
+              decision: sourceModel("decision", {
+                type: "decision",
+                api: api("@opencode/ai/providers/openrouter/decisions"),
+              }),
+            },
+          },
+        }),
+      )
+      expect(acme?.models.map((item) => [item.id, item.type, item.package ?? acme.info.package])).toEqual([
+        [Model.ID.make("chat"), "chat", chatPackage],
+        [Model.ID.make("image"), "image", "@opencode/ai/providers/openai-compatible/images"],
+        [Model.ID.make("decision"), "decision", "@opencode/ai/providers/openrouter/decisions"],
+      ])
+    }),
+  )
+
   it.live("drops model types opencode doesn't keep", () =>
     Effect.gen(function* () {
       const cache = makeCache()
       const api = {
-        images: { base_url: "https://api.acme.test/v1", sdk: { opencodeai: "@opencode/ai/providers/openai" } },
+        images: { base_url: "https://api.acme.test/v1", sdk: { opencodeai: "@opencode/ai/providers/openai/images" } },
       }
       const model = (id: string, type: string) => ({
         id,
