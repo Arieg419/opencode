@@ -16667,7 +16667,7 @@
               "type": "string"
             },
             "minItems": 1,
-            "description": "Hostnames that receive this certificate. `*` and `?` wildcards match any characters"
+            "description": "Hostnames that receive this certificate, without scheme or port. `*` and `?` match any characters"
           },
           "cert": {
             "type": "string"
@@ -16675,7 +16675,7 @@
           "key": {
             "type": "string"
           },
-          "passphrase": {
+          "passphrase_file": {
             "type": "string"
           }
         },

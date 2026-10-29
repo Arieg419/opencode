@@ -1,7 +1,7 @@
 export * as ClientCertificate from "./client-certificate.js"
 
 import path from "path"
-import { Context, Effect, Layer } from "effect"
+import { Context, Duration, Effect, Exit, Layer } from "effect"
 import { FetchHttpClient, HttpClient, HttpClientError } from "effect/http"
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
 import { FSUtil } from "@opencode/util/fs-util"
@@ -15,7 +15,8 @@ export interface Rule {
   readonly hosts: readonly string[]
   readonly cert: string
   readonly key: string
-  readonly passphrase?: string
+  /** File holding the key's passphrase; read per request so the secret never enters a config document. */
+  readonly passphraseFile?: string
 }
 
 export interface Interface {
@@ -36,16 +37,18 @@ export const layer = (options?: Options) =>
     Effect.gen(function* () {
       const global = yield* Global.Service
       const context = yield* Effect.context<FSUtil.Service | AppProcess.Service>()
-      const rules = yield* Effect.cachedWithTTL(
-        load(global, options?.system).pipe(
-          Effect.provide(context),
-          Effect.catch((error) =>
-            Effect.logWarning("failed to load client certificates", { error }).pipe(Effect.as([])),
-          ),
-        ),
-        "1 minute",
+      // A failed load is retried on the next request instead of leaving the machine without certificates for a minute.
+      const rules = yield* Effect.cachedWithTTL(load(global, options?.system).pipe(Effect.provide(context)), (exit) =>
+        Exit.isSuccess(exit) ? "1 minute" : Duration.zero,
       )
-      return Service.of({ rules: () => rules })
+      return Service.of({
+        rules: () =>
+          rules.pipe(
+            Effect.catch((error) =>
+              Effect.logWarning("failed to load client certificates", { error }).pipe(Effect.as([])),
+            ),
+          ),
+      })
     }),
   )
 
@@ -67,13 +70,13 @@ const load = Effect.fn("ClientCertificate.load")(function* (global: Global.Inter
   if (!source) return []
   const directory = path.dirname(source.path ?? global.config)
   const resolve = (file: string) =>
-    file.startsWith("~/") ? path.join(global.home, file.slice(2)) : path.resolve(directory, file)
+    /^~[/\\]/.test(file) ? path.join(global.home, file.slice(2)) : path.resolve(directory, file)
   return (source.info.network?.client_certificates ?? []).map(
     (entry): Rule => ({
-      hosts: entry.hosts.map((host) => host.toLowerCase()),
+      hosts: entry.hosts.map(hostname),
       cert: resolve(entry.cert),
       key: resolve(entry.key),
-      passphrase: entry.passphrase,
+      passphraseFile: entry.passphrase_file === undefined ? undefined : resolve(entry.passphrase_file),
     }),
   )
 })
@@ -83,9 +86,12 @@ export function match(rules: readonly Rule[], url: string) {
   if (!URL.canParse(url)) return
   const target = new URL(url)
   if (target.protocol !== "https:" && target.protocol !== "wss:") return
-  const host = target.hostname.toLowerCase()
+  const host = hostname(target.hostname)
   return rules.find((rule) => rule.hosts.some((pattern) => Wildcard.match(host, pattern)))
 }
+
+// `llm.example.` and `LLM.example` name the same host as `llm.example`.
+const hostname = (host: string) => host.toLowerCase().replace(/\.$/, "")
 
 export function configured(options?: Options) {
   return makeGlobalNode({ service: Service, layer: layer(options), deps: [FSUtil.node, Global.node, AppProcess.node] })
@@ -115,14 +121,14 @@ export const httpClientLayer = Layer.effect(
           Effect.provideService(
             FetchHttpClient.Fetch,
             Object.assign(
-              (input: Parameters<typeof globalThis.fetch>[0], init?: BunFetchRequestInit) =>
+              async (input: Parameters<typeof globalThis.fetch>[0], init?: BunFetchRequestInit) =>
                 fetch(input, {
                   ...init,
                   tls: {
                     ...init?.tls,
                     cert: Bun.file(rule.cert),
                     key: Bun.file(rule.key),
-                    passphrase: rule.passphrase,
+                    passphrase: rule.passphraseFile && (await Bun.file(rule.passphraseFile).text()).trim(),
                   },
                   // Fetch would follow a redirect with the same TLS options, presenting the certificate to whatever
                   // host the server names. Only callers that handle redirects themselves see the 3xx.

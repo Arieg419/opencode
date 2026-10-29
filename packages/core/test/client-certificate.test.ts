@@ -1,7 +1,8 @@
 import path from "path"
 import fs from "fs/promises"
-import { afterAll, beforeAll, describe, expect } from "bun:test"
-import { Effect, Layer } from "effect"
+import { afterAll, beforeAll, describe, expect, test } from "bun:test"
+import { Effect, Layer, Option, Schema } from "effect"
+import { ConfigNetwork } from "@opencode/schema/config/network"
 import { FetchHttpClient, HttpClient } from "effect/http"
 import { ClientCertificate } from "@opencode/core/client-certificate"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
@@ -38,6 +39,7 @@ beforeAll(async () => {
       ...["-out", "client.pem", "-subj", "/CN=client", "-addext", "extendedKeyUsage=clientAuth"],
     ),
   ])
+  await Bun.write(path.join(certs, "passphrase"), "secret\n")
   ca = await Bun.file(path.join(certs, "ca.pem")).text()
   server = Bun.serve({
     hostname: "127.0.0.1",
@@ -67,7 +69,9 @@ const write = (directory: string, config: unknown) =>
 // The key is encrypted, so a request only succeeds when the passphrase reaches the TLS options too.
 const certificate = (hosts: string[]) => ({
   network: {
-    client_certificates: [{ hosts, cert: "certs/client.pem", key: "certs/client.key", passphrase: "secret" }],
+    client_certificates: [
+      { hosts, cert: "certs/client.pem", key: "certs/client.key", passphrase_file: "certs/passphrase" },
+    ],
   },
 })
 
@@ -88,6 +92,17 @@ const get = (host: string, pathname = "/") =>
   }).pipe(Effect.provideService(FetchHttpClient.RequestInit, { tls: { ca } } as BunFetchRequestInit))
 
 describe("ClientCertificate", () => {
+  test("accepts hostnames and rejects URLs, ports, and wildcard-only patterns", () => {
+    const valid = (host: string) =>
+      Option.isSome(
+        Schema.decodeUnknownOption(ConfigNetwork.ClientCertificate)({ hosts: [host], cert: "c.pem", key: "k.pem" }),
+      )
+    expect(["llm.corp.test", "*.corp.test", "llm-?.corp.test", "10.0.0.1", "[::1]"].filter(valid)).toHaveLength(5)
+    expect(
+      ["https://llm.corp.test", "llm.corp.test:8443", "llm.corp.test/v1", "*", "*.*", "::1"].filter(valid),
+    ).toEqual([])
+  })
+
   itWithOpenSSL("presents the certificate to a matching host", () =>
     Effect.gen(function* () {
       yield* write("system", certificate(["LOCALHOST"]))
@@ -125,10 +140,11 @@ describe("ClientCertificate", () => {
           hosts: ["*.corp.test"],
           cert: path.resolve(root.path, "/etc/corp.pem"),
           key: path.join(root.path, "system", "corp.key"),
-          passphrase: undefined,
+          passphraseFile: undefined,
         },
       ])
       expect(ClientCertificate.match(rules, "https://api.corp.test/v1")).toBe(rules[0])
+      expect(ClientCertificate.match(rules, "https://API.corp.test./v1")).toBe(rules[0])
       expect(ClientCertificate.match(rules, "http://api.corp.test/v1")).toBeUndefined()
       expect(ClientCertificate.match(rules, "https://user.test/v1")).toBeUndefined()
     }).pipe(Effect.provide(layer())),
@@ -146,7 +162,7 @@ describe("ClientCertificate", () => {
           hosts: ["user.test"],
           cert: path.join(root.path, "home", "user.pem"),
           key: path.join(root.path, "global", "user.key"),
-          passphrase: undefined,
+          passphraseFile: undefined,
         },
       ])
     }).pipe(Effect.provide(layer())),

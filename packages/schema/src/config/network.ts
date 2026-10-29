@@ -5,9 +5,12 @@ import { optional } from "../schema.js"
 
 const NonEmpty = Schema.Trim.check(Schema.isNonEmpty())
 
+// A bare hostname or bracketed IPv6 address, never a URL or host:port, and not a pattern of wildcards alone.
+const Host = Schema.Trim.check(Schema.isPattern(/^(?:(?=.*[a-z0-9])[a-z0-9*?.-]+|\[[0-9a-f:.]+\])$/i))
+
 export class ClientCertificate extends Schema.Class<ClientCertificate>("Config.Network.ClientCertificate")({
-  hosts: NonEmpty.pipe(Schema.Array, Schema.check(Schema.isMinLength(1))).annotate({
-    description: "Hostnames that receive this certificate. `*` and `?` wildcards match any characters",
+  hosts: Host.pipe(Schema.Array, Schema.check(Schema.isMinLength(1))).annotate({
+    description: "Hostnames that receive this certificate, without scheme or port. `*` and `?` match any characters",
   }),
   cert: NonEmpty.annotate({
     description: "Path to the PEM client certificate, absolute, `~/`, or relative to this configuration file",
@@ -15,8 +18,8 @@ export class ClientCertificate extends Schema.Class<ClientCertificate>("Config.N
   key: NonEmpty.annotate({
     description: "Path to the PEM private key, absolute, `~/`, or relative to this configuration file",
   }),
-  passphrase: Schema.String.pipe(optional).annotate({
-    description: "Passphrase for an encrypted private key",
+  passphrase_file: NonEmpty.pipe(optional).annotate({
+    description: "Path to a file holding the passphrase of an encrypted private key",
   }),
 }) {}
 
