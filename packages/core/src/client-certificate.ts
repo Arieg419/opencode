@@ -90,8 +90,11 @@ export function match(rules: readonly Rule[], url: string) {
   return rules.find((rule) => rule.hosts.some((pattern) => Wildcard.match(host, pattern)))
 }
 
-// `llm.example.` and `LLM.example` name the same host as `llm.example`.
-const hostname = (host: string) => host.toLowerCase().replace(/\.$/, "")
+// `llm.example.` and `LLM.example` name the same host as `llm.example`, and `[0:0::1]` the same as `[::1]`.
+const hostname = (host: string) =>
+  host.startsWith("[") && URL.canParse(`https://${host}`)
+    ? new URL(`https://${host}`).hostname
+    : host.toLowerCase().replace(/\.$/, "")
 
 export function configured(options?: Options) {
   return makeGlobalNode({ service: Service, layer: layer(options), deps: [FSUtil.node, Global.node, AppProcess.node] })
@@ -128,7 +131,8 @@ export const httpClientLayer = Layer.effect(
                     ...init?.tls,
                     cert: Bun.file(rule.cert),
                     key: Bun.file(rule.key),
-                    passphrase: rule.passphraseFile && (await Bun.file(rule.passphraseFile).text()).trim(),
+                    passphrase:
+                      rule.passphraseFile && (await Bun.file(rule.passphraseFile).text()).replace(/[\r\n]+$/, ""),
                   },
                   // Fetch would follow a redirect with the same TLS options, presenting the certificate to whatever
                   // host the server names. Only callers that handle redirects themselves see the 3xx.
