@@ -94,7 +94,7 @@ export const hasInlineContent = (data: typeof SessionMessageTable.$inferSelect.d
  * Puts each assistant row's `session_part` rows into its `data.content`, in ordinal order. Rows without parts keep
  * their inline content, so legacy rows read unchanged. Runs before blob hydration so media in parts restores too.
  */
-const withParts = Effect.fnUntraced(function* (
+export const withParts = Effect.fnUntraced(function* (
   db: DatabaseService,
   rows: ReadonlyArray<typeof SessionMessageTable.$inferSelect>,
 ) {
