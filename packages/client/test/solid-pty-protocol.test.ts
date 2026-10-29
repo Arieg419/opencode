@@ -59,6 +59,20 @@ describe("decodePersistentPtyMessage", () => {
   test("decodes the fields JSON.stringify drops", () => {
     expect(decode({ type: "controller_changed", generation: 5 })).toEqual({ type: "controller_changed", generation: 5 })
     expect(decode({ type: "exited", finalOffset: 512 })).toEqual({ type: "exited", finalOffset: 512 })
+
+    const attached = {
+      type: "attached",
+      info: { size: info.size },
+      role: "observer",
+      generation: 3,
+      replay: { requestedOffset: 0, availableOffset: 0, endOffset: 0, truncated: false },
+    }
+    expect(decode(attached)).toEqual(attached)
+
+    const released = { type: "controller_changed", attachmentID: null, generation: 5 }
+    expect(decode(released)).toEqual(released)
+    const exited = { type: "exited", exitCode: null, finalOffset: 512 }
+    expect(decode(exited)).toEqual(exited)
   })
 
   test("ignores fields it does not know", () => {
