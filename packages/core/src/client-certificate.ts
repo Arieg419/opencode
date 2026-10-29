@@ -9,6 +9,7 @@ import { Global } from "@opencode/util/global"
 import { AppProcess } from "@opencode/util/process"
 import { Config } from "./config.js"
 import { ConfigDiscovery } from "./config/discovery.js"
+import { WebSocketConstructor } from "./effect/websocket-constructor.js"
 import { Wildcard } from "./util/wildcard.js"
 
 export interface Rule {
@@ -102,7 +103,10 @@ export function configured(options?: Options) {
 
 export const node = configured()
 
-/** Fetch-backed HTTP client that presents the matching client certificate on each HTTPS request. */
+/**
+ * Wraps the fetch-backed HTTP client so each HTTPS request to a matching host presents its client certificate. Only
+ * model requests use it: tools such as webfetch and URLs from project config must not borrow the machine's identity.
+ */
 export const httpClientLayer = Layer.effect(
   HttpClient.HttpClient,
   Effect.gen(function* () {
@@ -112,13 +116,18 @@ export const httpClientLayer = Layer.effect(
       Effect.gen(function* () {
         const rule = match(yield* certificates.rules(), request.url)
         if (!rule) return yield* effect
+        const host = new URL(request.url).hostname
+        const fail = (description: string) =>
+          new HttpClientError.HttpClientError({ reason: new HttpClientError.TransportError({ request, description }) })
         if (typeof Bun === "undefined")
-          return yield* new HttpClientError.HttpClientError({
-            reason: new HttpClientError.TransportError({
-              request,
-              description: `A client certificate is configured for ${new URL(request.url).hostname}, but this runtime cannot present one`,
-            }),
-          })
+          return yield* fail(`A client certificate is configured for ${host}, but this runtime cannot present one`)
+        // Bun also uses the request's TLS options for an HTTPS proxy's own handshake, which would present the
+        // certificate to the proxy.
+        const proxy = WebSocketConstructor.proxy(request.url)
+        if (proxy?.startsWith("https:"))
+          return yield* fail(
+            `A client certificate is configured for ${host}, which would also be sent to the HTTPS proxy. Add ${host} to NO_PROXY or use an http:// proxy`,
+          )
         const fetch = yield* FetchHttpClient.Fetch
         return yield* effect.pipe(
           Effect.provideService(
@@ -137,6 +146,8 @@ export const httpClientLayer = Layer.effect(
                   // Fetch would follow a redirect with the same TLS options, presenting the certificate to whatever
                   // host the server names. Only callers that handle redirects themselves see the 3xx.
                   redirect: init?.redirect === "manual" ? "manual" : "error",
+                  // Pin the proxy decision checked above so Bun cannot choose a different one.
+                  proxy: proxy ?? false,
                 }),
               { preconnect: fetch.preconnect },
             ),
@@ -145,6 +156,7 @@ export const httpClientLayer = Layer.effect(
       }),
     )
   }),
-).pipe(Layer.provide(FetchHttpClient.layer))
+)
 
-export const httpClient = makeGlobalNode({ service: HttpClient.HttpClient, layer: httpClientLayer, deps: [node] })
+/** No machine configuration: for runtimes such as workerd that have no host filesystem. */
+export const empty = Layer.succeed(Service, Service.of({ rules: () => Effect.succeed([]) }))
