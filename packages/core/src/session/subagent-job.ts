@@ -1,16 +1,20 @@
 export * as SubagentJob from "./subagent-job.js"
 
+import { and, gte, lt, sql } from "drizzle-orm"
 import { Context, Effect, Layer, Option, Schema, Scope, Stream } from "effect"
 import { Node } from "@opencode/util/effect/app-node"
 import type { LayerNode } from "@opencode/util/effect/layer-node"
 import { Bus } from "../bus.js"
+import { Database } from "../database/database.js"
 import { KeyedMutex } from "../effect/keyed-mutex.js"
 import { Job } from "../job.js"
 import { KV } from "../kv.js"
+import { KVTable } from "../kv/sql.js"
 import { Session } from "../session.js"
 import { SessionEvent } from "./event.js"
 import { SessionMessage } from "./message.js"
 import { SessionSchema } from "./schema.js"
+import { SessionMessageTable, SessionTable } from "./sql.js"
 import { SessionStore } from "./store.js"
 import { SubagentCompletion } from "./subagent-completion.js"
 
@@ -30,7 +34,11 @@ type Marker = typeof Marker.Type
 
 const decodeMarker = Schema.decodeUnknownOption(Marker)
 const markerPrefix = "subagent.parent/"
+const markerPrefixEnd = "subagent.parent0"
+const childIndexPrefix = "subagent.child/"
 const markerKey = (sessionID: SessionSchema.ID) => `${markerPrefix}${sessionID}`
+const childIndexKey = (parentSessionID: SessionSchema.ID, childSessionID: SessionSchema.ID) =>
+  `${childIndexPrefix}${parentSessionID}/${childSessionID}`
 const noticeID = (idleID: SessionMessage.ID) => SessionMessage.ID.make(`${idleID}_subagent`)
 const TURN_PAGE = 50
 
@@ -52,8 +60,9 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/Su
 const make: Effect.Effect<
   Interface,
   never,
-  Session.Service | SessionStore.Service | Job.Service | Bus.Service | KV.Service | Scope.Scope
+  Database.Service | Session.Service | SessionStore.Service | Job.Service | Bus.Service | KV.Service | Scope.Scope
 > = Effect.gen(function* () {
+  const db = (yield* Database.Service).db
   const sessions = yield* Session.Service
   const store = yield* SessionStore.Service
   const jobs = yield* Job.Service
@@ -73,12 +82,27 @@ const make: Effect.Effect<
     kv.get(markerKey(sessionID)).pipe(Effect.map((value) => Option.getOrUndefined(decodeMarker(value))))
 
   const writeMarker = (sessionID: SessionSchema.ID, marker: Marker) =>
-    kv.set(markerKey(sessionID), {
-      parentSessionID: marker.parentSessionID,
-      agent: marker.agent,
-      description: marker.description,
-      ...(marker.reported ? { reported: marker.reported } : {}),
-    })
+    Effect.all(
+      [
+        kv.set(markerKey(sessionID), {
+          parentSessionID: marker.parentSessionID,
+          agent: marker.agent,
+          description: marker.description,
+          ...(marker.reported ? { reported: marker.reported } : {}),
+        }),
+        kv.set(childIndexKey(marker.parentSessionID, sessionID), ""),
+      ],
+      { discard: true },
+    )
+
+  const removeMarker = (childSessionID: SessionSchema.ID, parentSessionID?: SessionSchema.ID) =>
+    Effect.all(
+      [
+        kv.remove(markerKey(childSessionID)),
+        parentSessionID ? kv.remove(childIndexKey(parentSessionID, childSessionID)) : Effect.void,
+      ],
+      { discard: true },
+    )
 
   const latestIdle = (sessionID: SessionSchema.ID) =>
     store.messages({ sessionID, type: "idle", order: "desc", limit: 1 }).pipe(
@@ -86,19 +110,39 @@ const make: Effect.Effect<
       Effect.orDie,
     )
 
-  const scanMarkers = Effect.gen(function* () {
-    const entries: Array<{ readonly childSessionID: SessionSchema.ID; readonly marker: Marker }> = []
-    let after: string | undefined
-    do {
-      const page = yield* kv.scan({ prefix: markerPrefix, after })
-      for (const entry of page.entries) {
-        const marker = Option.getOrUndefined(decodeMarker(entry.value))
-        const id = Schema.decodeUnknownOption(SessionSchema.ID)(entry.key.slice(markerPrefix.length))
-        if (marker && Option.isSome(id)) entries.push({ childSessionID: id.value, marker })
-      }
-      after = page.next
-    } while (after)
-    return entries
+  // Startup only visits markers that are orphaned or behind the child's newest projected idle row.
+  const dirtyMarkers = Effect.gen(function* () {
+    const start = markerPrefix.length + 1
+    const rows = yield* db
+      .select({ key: KVTable.key })
+      .from(KVTable)
+      .where(
+        and(
+          gte(KVTable.key, markerPrefix),
+          lt(KVTable.key, markerPrefixEnd),
+          sql`(
+            not exists (
+              select 1 from ${SessionTable} child
+              join ${SessionTable} parent on parent.id = json_extract(${KVTable.value}, '$.parentSessionID')
+              where child.id = substr(${KVTable.key}, ${start})
+                and child.parent_id = parent.id
+            )
+            or coalesce(json_extract(${KVTable.value}, '$.reported'), '') != coalesce((
+              select m.id from ${SessionMessageTable} m
+              where m.session_id = substr(${KVTable.key}, ${start})
+                and m.type = 'idle'
+              order by m.seq desc
+              limit 1
+            ), '')
+          )`,
+        ),
+      )
+      .all()
+      .pipe(Effect.orDie)
+    return rows.flatMap((row) => {
+      const id = Schema.decodeUnknownOption(SessionSchema.ID)(row.key.slice(markerPrefix.length))
+      return Option.isSome(id) ? [id.value] : []
+    })
   })
 
   // A revert can delete the previously reported idle boundary; re-anchor to the newest pre-revert idle.
@@ -131,28 +175,30 @@ const make: Effect.Effect<
       resume: deferredParents.has(marker.parentSessionID) ? false : undefined,
     }).pipe(
       Effect.as(true),
-      Effect.catchTag("Session.NotFoundError", () => kv.remove(markerKey(childSessionID)).pipe(Effect.as(false))),
+      Effect.catchTag("Session.NotFoundError", () =>
+        removeMarker(childSessionID, marker.parentSessionID).pipe(Effect.as(false)),
+      ),
       Effect.orDie,
     )
   })
 
   // Every unreported busy period of a child, read forward in sequence order from its saved marker.
-  // Text results and failures notify the parent; empty successes, interruptions, and turns containing
-  // a direct user prompt advance the marker silently.
+  // Text results and failures notify the parent; empty successes, interruptions, and busy periods
+  // started by a direct user prompt advance the marker silently.
   const syncUnlocked = Effect.fnUntraced(function* (sessionID: SessionSchema.ID) {
     if ((foreground.get(sessionID) ?? 0) > 0) return
     const marker = yield* readMarker(sessionID)
     if (!marker) return
     const child = yield* store.get(sessionID)
     if (!child || child.parentID !== marker.parentSessionID || !(yield* store.get(marker.parentSessionID))) {
-      yield* kv.remove(markerKey(sessionID))
+      yield* removeMarker(sessionID, marker.parentSessionID)
       return
     }
 
     let reported = marker.reported
     let cursor = reported ? { id: reported, direction: "next" as const } : undefined
     let assistant: SessionMessage.Assistant | undefined
-    let prompted = false
+    let starter: "subagent" | "direct" | undefined
     let checkedAnchor = false
     while (true) {
       const page = yield* store.messages({ sessionID, order: "asc", limit: TURN_PAGE, cursor }).pipe(Effect.orDie)
@@ -166,12 +212,13 @@ const make: Effect.Effect<
         }
       }
       for (const message of page) {
-        if (message.type === "user" && message.metadata?.source !== "subagent") prompted = true
+        if (starter === undefined && (message.type === "user" || message.type === "synthetic"))
+          starter = message.type === "user" && message.metadata?.source !== "subagent" ? "direct" : "subagent"
         if (message.type === "assistant" && message.time.completed !== undefined && message.error === undefined)
           assistant = message
         if (message.type !== "idle") continue
 
-        const shouldDeliver = !prompted && message.outcome !== "interrupted"
+        const shouldDeliver = starter !== "direct" && message.outcome !== "interrupted"
         if (shouldDeliver && message.outcome === "failed") {
           const delivered = yield* deliverToParent(sessionID, marker, message.id, {
             status: "error",
@@ -192,7 +239,7 @@ const make: Effect.Effect<
         reported = message.id
         yield* writeMarker(sessionID, { ...marker, reported })
         assistant = undefined
-        prompted = false
+        starter = undefined
       }
       const last = page.at(-1)
       if (page.length < TURN_PAGE || !last) return
@@ -202,26 +249,32 @@ const make: Effect.Effect<
 
   const sync = (sessionID: SessionSchema.ID) => locks.withLock(sessionID)(syncUnlocked(sessionID))
 
-  const clearChild = (childSessionID: SessionSchema.ID) =>
+  const clearChild = (childSessionID: SessionSchema.ID, parentSessionID?: SessionSchema.ID) =>
     locks.withLock(childSessionID)(
       Effect.gen(function* () {
+        const existing = parentSessionID ? undefined : yield* readMarker(childSessionID)
         foreground.delete(childSessionID)
         settled.delete(childSessionID)
-        yield* kv.remove(markerKey(childSessionID))
+        yield* removeMarker(childSessionID, parentSessionID ?? existing?.parentSessionID)
       }),
     )
 
   const forget = Effect.fnUntraced(function* (sessionID: SessionSchema.ID) {
     yield* clearChild(sessionID)
-    const markers = yield* scanMarkers
-    yield* Effect.forEach(
-      markers,
-      (entry) =>
-        entry.marker.parentSessionID === sessionID && entry.childSessionID !== sessionID
-          ? clearChild(entry.childSessionID)
-          : Effect.void,
-      { discard: true },
-    )
+    const prefix = `${childIndexPrefix}${sessionID}/`
+    let after: string | undefined
+    do {
+      const page = yield* kv.scan({ prefix, after })
+      yield* Effect.forEach(
+        page.entries,
+        (entry) => {
+          const id = Schema.decodeUnknownOption(SessionSchema.ID)(entry.key.slice(prefix.length))
+          return Option.isSome(id) && id.value !== sessionID ? clearChild(id.value, sessionID) : kv.remove(entry.key)
+        },
+        { discard: true },
+      )
+      after = page.next
+    } while (after)
   })
 
   const latestTurnOutput = Effect.fnUntraced(function* (sessionID: SessionSchema.ID) {
@@ -432,10 +485,8 @@ const make: Effect.Effect<
       () =>
         prepare.pipe(
           Effect.tap(() =>
-            scanMarkers.pipe(
-              Effect.flatMap((markers) =>
-                Effect.forEach(markers, (entry) => sync(entry.childSessionID), { discard: true }),
-              ),
+            dirtyMarkers.pipe(
+              Effect.flatMap((ids) => Effect.forEach(ids, (childID) => sync(childID), { discard: true })),
             ),
           ),
         ),
@@ -464,5 +515,5 @@ export const layer = Layer.effect(Service, make)
 export const node: LayerNode.Provider<Service, never, typeof Node.tags.values.global> = Node.makeGlobalNode({
   service: Service,
   layer,
-  deps: [Session.node, SessionStore.node, Job.node, Bus.node, KV.node],
+  deps: [Database.node, Session.node, SessionStore.node, Job.node, Bus.node, KV.node],
 })

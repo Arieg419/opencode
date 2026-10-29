@@ -533,6 +533,7 @@ describe("SubagentTool", () => {
         expect(yield* Queue.size(child.notifications)).toBe(0)
         expect(Exit.isFailure(yield* child.sessions.get(child.id).pipe(Effect.exit))).toBe(true)
         expect(yield* child.kv.get(`subagent.parent/${child.id}`)).toBeUndefined()
+        expect(yield* child.kv.get(`subagent.child/${child.parentID}/${child.id}`)).toBeUndefined()
       }),
     ),
   )
@@ -543,10 +544,66 @@ describe("SubagentTool", () => {
         expect(yield* Queue.take(child.notifications)).toBe(child.completed(childText))
         yield* child.settle
         expect(yield* child.kv.get(`subagent.parent/${child.id}`)).toBeDefined()
+        expect(yield* child.kv.get(`subagent.child/${child.parentID}/${child.id}`)).toBeDefined()
 
         yield* child.sessions.remove(child.id)
         expect(yield* child.kv.get(`subagent.parent/${child.id}`)).toBeUndefined()
+        expect(yield* child.kv.get(`subagent.child/${child.parentID}/${child.id}`)).toBeUndefined()
       }),
+    ),
+  )
+
+  completionIt.live("still notifies the parent when a user steers a running background child", () =>
+    Effect.acquireRelease(
+      Effect.promise(() => tmpdir()),
+      (dir) => Effect.promise(() => dir[Symbol.asyncDispose]()),
+    ).pipe(
+      Effect.flatMap((dir) =>
+        Effect.gen(function* () {
+          const sessions = yield* Session.Service
+          const llm = yield* TestLLM.Test
+          const gate = yield* llm.gate()
+          const parent = yield* sessions.create({
+            location: Location.Ref.make({ directory: AbsolutePath.make(dir.path) }),
+            model: parentModel,
+            title: "Steered child recipient",
+          })
+          yield* withSubagent(parent.location)
+          const locations = yield* LocationServiceMap.Service
+          const registry = yield* Tool.Service.pipe(Effect.provide(locations.get(parent.location)))
+          const bus = yield* Bus.Service
+          const notifications = yield* Queue.unbounded<string>()
+          yield* bus.project(SessionEvent.InboxEnqueued, (event) =>
+            event.data.sessionID === parent.id && event.data.item.type === "synthetic"
+              ? Queue.offer(notifications, event.data.item.payload.text).pipe(Effect.asVoid)
+              : Effect.void,
+          )
+
+          const launched = yield* executeTool(registry, {
+            sessionID: parent.id,
+            ...toolIdentity,
+            call: {
+              type: "tool-call",
+              id: "call-steered-child",
+              name: SubagentTool.name,
+              input: { agent: "reviewer", description: "background review", prompt: "review", background: true },
+            },
+          })
+          const childID = outputSessionID(launched.metadata)
+          yield* gate.started
+          // Steering into a turn the parent started keeps that turn owned by the subagent request.
+          yield* sessions.prompt({ sessionID: childID, text: "Also check edge cases." })
+          yield* llm.push(TestLLM.text("Steered final answer.", "steered"))
+          yield* gate.release
+
+          const delivered = yield* Queue.take(notifications).pipe(Effect.timeoutOption("3 seconds"))
+          expect(Option.getOrUndefined(delivered)).toBe(
+            `<subagent sessionID="${childID}" state="completed" description="background review">\nSteered final answer.\n</subagent>`,
+          )
+          yield* Effect.all([sessions.wait(childID), sessions.wait(parent.id)], { discard: true })
+          expect(yield* Queue.size(notifications)).toBe(0)
+        }),
+      ),
     ),
   )
 
