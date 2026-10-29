@@ -1,8 +1,8 @@
 {
   "version": "7",
   "dialect": "sqlite",
-  "id": "cc45078e-538a-4aa4-a215-69cf17bf6b93",
-  "prevIds": ["23940db2-8b4e-4a5e-a404-70d785bd788c"],
+  "id": "b6ca2c2f-a188-43a1-aaae-55101a0494ed",
+  "prevIds": ["e5daa0af-cae7-4057-919a-ebf44dfced0a"],
   "ddl": [
     {
       "name": "account_state",
@@ -74,6 +74,10 @@
     },
     {
       "name": "session_message",
+      "entityType": "tables"
+    },
+    {
+      "name": "session_part",
       "entityType": "tables"
     },
     {
@@ -1320,6 +1324,86 @@
     },
     {
       "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "message_id",
+      "entityType": "columns",
+      "table": "session_part"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "session_id",
+      "entityType": "columns",
+      "table": "session_part"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "ordinal",
+      "entityType": "columns",
+      "table": "session_part"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "type",
+      "entityType": "columns",
+      "table": "session_part"
+    },
+    {
+      "type": "text",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "call_id",
+      "entityType": "columns",
+      "table": "session_part"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_created",
+      "entityType": "columns",
+      "table": "session_part"
+    },
+    {
+      "type": "integer",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "time_updated",
+      "entityType": "columns",
+      "table": "session_part"
+    },
+    {
+      "type": "text",
+      "notNull": true,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
+      "name": "data",
+      "entityType": "columns",
+      "table": "session_part"
+    },
+    {
+      "type": "text",
       "notNull": false,
       "autoincrement": false,
       "default": null,
@@ -1614,6 +1698,16 @@
       "autoincrement": false,
       "default": null,
       "generated": null,
+      "name": "time_busy",
+      "entityType": "columns",
+      "table": "session_v2"
+    },
+    {
+      "type": "integer",
+      "notNull": false,
+      "autoincrement": false,
+      "default": null,
+      "generated": null,
       "name": "time_idle",
       "entityType": "columns",
       "table": "session_v2"
@@ -1890,6 +1984,28 @@
       "table": "session_message"
     },
     {
+      "columns": ["message_id"],
+      "tableTo": "session_message",
+      "columnsTo": ["id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_session_part_message_id_session_message_id_fk",
+      "entityType": "fks",
+      "table": "session_part"
+    },
+    {
+      "columns": ["session_id"],
+      "tableTo": "session_v2",
+      "columnsTo": ["id"],
+      "onUpdate": "NO ACTION",
+      "onDelete": "CASCADE",
+      "nameExplicit": false,
+      "name": "fk_session_part_session_id_session_v2_id_fk",
+      "entityType": "fks",
+      "table": "session_part"
+    },
+    {
       "columns": ["project_id"],
       "tableTo": "project",
       "columnsTo": ["id"],
@@ -1938,6 +2054,13 @@
       "name": "instruction_entry_pk",
       "entityType": "pks",
       "table": "instruction_entry"
+    },
+    {
+      "columns": ["message_id", "ordinal"],
+      "nameExplicit": false,
+      "name": "session_part_pk",
+      "entityType": "pks",
+      "table": "session_part"
     },
     {
       "columns": ["project_id", "directory"],
@@ -2295,6 +2418,28 @@
       "name": "session_message_time_created_idx",
       "entityType": "indexes",
       "table": "session_message"
+    },
+    {
+      "columns": [
+        {
+          "value": "session_id",
+          "isExpression": false
+        },
+        {
+          "value": "message_id",
+          "isExpression": false
+        },
+        {
+          "value": "ordinal",
+          "isExpression": false
+        }
+      ],
+      "isUnique": false,
+      "where": null,
+      "origin": "manual",
+      "name": "session_part_session_message_idx",
+      "entityType": "indexes",
+      "table": "session_part"
     },
     {
       "columns": [
