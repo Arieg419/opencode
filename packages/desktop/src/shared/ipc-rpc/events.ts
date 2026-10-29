@@ -70,6 +70,10 @@ export class PluginMenubarItemsChanged extends Schema.TaggedClass<PluginMenubarI
   { items: Schema.Array(PluginMenubarItem) },
 ) {}
 
+export class HexDictationLevel extends Schema.TaggedClass<HexDictationLevel>()("HexDictationLevel", {
+  level: Schema.Number,
+}) {}
+
 export const DesktopEvent = Schema.Union([
   DeepLinksOpened,
   MenuCommandTriggered,
@@ -84,6 +88,7 @@ export const DesktopEvent = Schema.Union([
   PluginsChanged,
   PluginGuisChanged,
   PluginMenubarItemsChanged,
+  HexDictationLevel,
 ])
 
 export type DesktopEvent = Schema.Schema.Type<typeof DesktopEvent>

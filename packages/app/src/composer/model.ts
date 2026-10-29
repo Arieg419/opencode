@@ -30,6 +30,7 @@ import { isAttachment } from "./prompt-parts"
 import { isCommentItem } from "./state"
 import type { PromptHistoryComment } from "./history/entry"
 import { createComposerHistory } from "./history/store"
+import { createHexDictation } from "./dictation"
 import { createComposerSubmit } from "./submit"
 import { useAttachmentDestination } from "./attachments/destination"
 import { parseClientSlashCommand } from "./client-slash-command"
@@ -303,6 +304,42 @@ export function createComposerModel(adapter: ComposerAdapter, options?: { queue?
 
   const variants = createMemo(() => ["default", ...adapter.controls().model.selection.variant.list()])
 
+  const dictation = platform.hexDictation
+    ? createHexDictation({
+        bridge: platform.hexDictation,
+        insert: (transcript) => controller.insertDictation(transcript),
+        focus: () => controller.restoreFocus(),
+        notify: {
+          notInstalled: () =>
+            showToast({
+              variant: "error",
+              title: language.t("prompt.toast.hexNotInstalled.title"),
+              description: language.t("prompt.toast.hexNotInstalled.description"),
+            }),
+          notReady: () =>
+            showToast({
+              variant: "error",
+              title: language.t("prompt.toast.hexNotReady.title"),
+              description: language.t("prompt.toast.hexNotReady.description"),
+            }),
+          busy: () => showToast({ title: language.t("prompt.toast.hexBusy.title") }),
+          empty: () => showToast({ title: language.t("prompt.toast.hexNoSpeech.title") }),
+          failed: (message) =>
+            showToast({
+              variant: "error",
+              title: language.t("prompt.toast.hexFailed.title"),
+              description: message,
+            }),
+        },
+      })
+    : undefined
+
+  createEffect(() => {
+    if (mode() === "shell" && (dictation?.status() === "recording" || dictation?.status() === "starting")) {
+      dictation.onCancel()
+    }
+  })
+
   const submission = createComposerSubmit({
     adapter,
     mode,
@@ -530,6 +567,7 @@ export function createComposerModel(adapter: ComposerAdapter, options?: { queue?
         },
         keybind: () => command.keybindParts("model.variant.cycle"),
       },
+      dictation,
       submit: {
         available,
         stopping,

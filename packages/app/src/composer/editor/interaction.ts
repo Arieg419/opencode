@@ -34,6 +34,16 @@ export type ComposerSelectControl = {
   keybind?: Accessor<string[]>
 }
 
+export type ComposerDictationStatus = "idle" | "starting" | "recording" | "transcribing" | "done"
+
+export type ComposerDictationControl = {
+  status: Accessor<ComposerDictationStatus>
+  level: Accessor<number>
+  elapsedSeconds: Accessor<number>
+  onToggle: () => void
+  onCancel: () => void
+}
+
 export type ComposerEditorView = {
   draftOnly?: boolean
   placeholder?: Accessor<string>
@@ -42,6 +52,7 @@ export type ComposerEditorView = {
   }
   agent?: ComposerSelectControl
   variant?: ComposerSelectControl
+  dictation?: ComposerDictationControl
   submit: {
     available?: Accessor<boolean>
     stopping: Accessor<boolean>
@@ -413,6 +424,16 @@ export function createComposerEditor(input: {
 
     if (handled) return true
 
+    if (
+      event.key === "Escape" &&
+      (input.view.dictation?.status() === "recording" || input.view.dictation?.status() === "starting")
+    ) {
+      event.preventDefault()
+      input.view.dictation.onCancel()
+
+      return true
+    }
+
     if (event.key === "Escape" && input.view.submit.queue?.editing()) {
       event.preventDefault()
       input.view.submit.queue.cancelEdit()
@@ -750,6 +771,20 @@ export function createComposerEditor(input: {
     },
     setQuery(value: string) {
       dispatch({ type: "popover.query", value })
+    },
+    insertDictation(transcript: string) {
+      const trimmed = transcript.trim()
+
+      if (!trimmed) return
+      resetCycle()
+      const current = draft.state.prompt.map((part) => ("content" in part ? part.content : "")).join("")
+      const cursor = draft.state.cursor ?? promptLength(draft.state.prompt)
+      const before = current.slice(0, cursor)
+      const after = current.slice(cursor)
+      const leading = before.length > 0 && !/\s$/.test(before) ? " " : ""
+      const trailing = after.length > 0 && !/^\s/.test(after) ? " " : ""
+      draft.addText(`${leading}${trimmed}${trailing}`)
+      restoreFocus()
     },
   }
 }

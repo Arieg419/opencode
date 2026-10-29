@@ -98,3 +98,12 @@
   background: transparent !important;
   box-shadow: none !important;
 }
+
+/* Soft 16px edge fades so scrolling dictation waveform bars enter and leave without hard clipping. */
+[data-slot="composer-dictation-waveform"] {
+  mask-image: linear-gradient(to right, transparent, black 16px, black calc(100% - 16px), transparent);
+}
+
+[data-slot="composer-dictation-timer"] {
+  font-variant-numeric: tabular-nums;
+}

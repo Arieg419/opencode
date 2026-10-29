@@ -294,6 +294,10 @@ const icons = {
     viewBox: "0 0 16 16",
     body: `<path d="M2 7V9M4.5 5V11M7 2.5V13.5M9.5 4.5V11.5M12 6V10M14.5 7.25V8.75" stroke="currentColor" stroke-width="1.5" stroke-linecap="round"/>`,
   },
+  microphone: {
+    viewBox: "0 0 16 16",
+    body: `<rect x="6" y="1.5" width="4" height="7.5" rx="2" stroke="currentColor"/><path d="M3.5 7a4.5 4.5 0 0 0 9 0M8 11.5v3M6 14.5h4" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/>`,
+  },
   "outline-steer": {
     viewBox: "0 0 16 16",
     body: `<path d="M8 14C11.3137 14 14 11.3137 14 8C14 4.68634 11.3137 2 8 2C4.68626 2 2 4.68634 2 8C2 11.3137 4.68626 14 8 14Z" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/><path d="M8 3.86328V12.1391C10.2854 12.1391 12.1379 10.2863 12.1379 8.00121C12.1379 5.71608 10.2854 3.86328 8 3.86328Z" fill="currentColor"/>`,

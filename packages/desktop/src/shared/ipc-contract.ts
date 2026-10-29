@@ -41,3 +41,5 @@ export type ClipboardImage = {
   width: number
   height: number
 }
+
+export type { HexDictationFinishResult, HexDictationStartResult } from "@opencode/app/desktop"

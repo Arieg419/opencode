@@ -19,6 +19,7 @@ import { FileIcon } from "@opencode/ui/file-icon"
 import { Icon } from "@opencode/ui/icon"
 import { IconButton } from "@opencode/ui/icon-button"
 import { Loader } from "@opencode/ui/loader"
+import { observeReducedMotion, prefersReducedMotion } from "@opencode/ui/motion"
 import { ProviderModelIcon } from "@/providers/models/provider-group"
 import { useI18n } from "@opencode/ui/context/i18n"
 import { Button } from "@opencode/ui/button"
@@ -42,7 +43,11 @@ import type {
   ComposerSkillPart,
   ComposerSuggestion,
 } from "../types"
-import type { ComposerEditorModel, ComposerSelectControl } from "./interaction"
+import type {
+  ComposerDictationControl,
+  ComposerEditorModel,
+  ComposerSelectControl,
+} from "./interaction"
 import { isAttachment } from "../prompt-parts"
 import { QuoteCommentEditor } from "./quote-comment"
 import "../attachments/attachments.css"
@@ -159,10 +164,18 @@ export function ComposerEditor(props: ComposerEditorProps) {
 
   const mode = createMemo(() => state.mode)
 
+  const dictating = createMemo(() => {
+    const status = view.dictation?.status()
+
+    return mode() === "normal" && !view.draftOnly && (status === "recording" || status === "transcribing")
+  })
+
+  const controlsVisible = createMemo(() => mode() === "normal" && !dictating())
+
   const buttons = createMemo(() => ({
-    opacity: mode() === "normal" ? 1 : 0,
-    "pointer-events": mode() === "normal" ? ("auto" as const) : ("none" as const),
-    transition: "opacity 200ms ease",
+    opacity: controlsVisible() ? 1 : 0,
+    "pointer-events": controlsVisible() ? ("auto" as const) : ("none" as const),
+    transition: "opacity 180ms ease",
   }))
 
   createEffect(() => {
@@ -385,74 +398,94 @@ export function ComposerEditor(props: ComposerEditorProps) {
         </div>
 
         <div class="flex h-11 shrink-0 items-center px-2">
-          <div
-            class="flex shrink-0 items-center"
-            aria-hidden={state.mode === "shell"}
-            inert={state.mode === "shell" ? true : undefined}
-            style={buttons()}
-          >
-            <ComposerEditorAddMenu
-              disabled={view.draftOnly || state.mode === "shell"}
-              title={i18n.t("ui.promptInput.add")}
-              keybind={props.attachKeybind ?? ["Mod", "U"]}
-              attachLabel={i18n.t("ui.promptInput.attachments")}
-              attachShortcut={props.attachShortcut ?? "Mod+U"}
-              commandsLabel={i18n.t("ui.promptInput.commands")}
-              contextLabel={i18n.t("ui.promptInput.context")}
-              shellLabel={i18n.t("ui.promptInput.shell")}
-              onAttach={props.controller.attach}
-              onCommands={props.controller.openCommands}
-              onContext={props.controller.openContext}
-              onShell={props.controller.openShell}
-            />
-          </div>
-          <div
-            ref={controlsViewport}
-            data-slot="composer-controls"
-            data-overflow-start={overflow.start}
-            data-overflow-end={overflow.end}
-            class="ms-1 me-3 h-full min-w-0 flex-1 overflow-x-auto overscroll-x-contain no-scrollbar"
-            onScroll={updateOverflow}
-            // Chromium leaves a partly visible control where it is when it takes focus, cut off by the edge.
-            onFocusIn={() => document.activeElement?.scrollIntoView({ block: "nearest", inline: "nearest" })}
-            aria-hidden={state.mode === "shell"}
-            inert={state.mode === "shell" ? true : undefined}
-            style={buttons()}
-          >
-            <div ref={controlsContent} class="flex h-full w-max min-w-full items-center gap-0.5">
-              <Show when={view.agent} keyed>
-                {(control) => (
-                  <ComposerEditorConfiguredSelect
-                    title={i18n.t("ui.promptInput.chooseAgent")}
-                    keybind={["Mod", "."]}
-                    control={control}
-                  />
-                )}
-              </Show>
-              <Show when={props.modelControlsVisible ?? true}>
-                {props.modelControl}
-                <Show when={view.variant} keyed>
+          <div class="relative flex h-full min-w-0 flex-1 items-center">
+            <div
+              class="flex shrink-0 items-center"
+              aria-hidden={!controlsVisible()}
+              inert={!controlsVisible() ? true : undefined}
+              style={buttons()}
+            >
+              <ComposerEditorAddMenu
+                disabled={view.draftOnly || !controlsVisible()}
+                title={i18n.t("ui.promptInput.add")}
+                keybind={props.attachKeybind ?? ["Mod", "U"]}
+                attachLabel={i18n.t("ui.promptInput.attachments")}
+                attachShortcut={props.attachShortcut ?? "Mod+U"}
+                commandsLabel={i18n.t("ui.promptInput.commands")}
+                contextLabel={i18n.t("ui.promptInput.context")}
+                shellLabel={i18n.t("ui.promptInput.shell")}
+                onAttach={props.controller.attach}
+                onCommands={props.controller.openCommands}
+                onContext={props.controller.openContext}
+                onShell={props.controller.openShell}
+              />
+            </div>
+            <div
+              ref={controlsViewport}
+              data-slot="composer-controls"
+              data-overflow-start={overflow.start}
+              data-overflow-end={overflow.end}
+              class="ms-1 me-3 h-full min-w-0 flex-1 overflow-x-auto overscroll-x-contain no-scrollbar"
+              onScroll={updateOverflow}
+              // Chromium leaves a partly visible control where it is when it takes focus, cut off by the edge.
+              onFocusIn={() => document.activeElement?.scrollIntoView({ block: "nearest", inline: "nearest" })}
+              aria-hidden={!controlsVisible()}
+              inert={!controlsVisible() ? true : undefined}
+              style={buttons()}
+            >
+              <div ref={controlsContent} class="flex h-full w-max min-w-full items-center gap-0.5">
+                <Show when={view.agent} keyed>
                   {(control) => (
-                    <Show when={control.options().length > 1}>
-                      <ComposerEditorConfiguredSelect
-                        mobileDrawer
-                        title={i18n.t("ui.promptInput.chooseVariant")}
-                        keybind={["Shift", "Mod", "D"]}
-                        control={control}
-                        class={control.current() === "default" ? "composer-variant-default" : undefined}
-                      />
-                    </Show>
+                    <ComposerEditorConfiguredSelect
+                      title={i18n.t("ui.promptInput.chooseAgent")}
+                      keybind={["Mod", "."]}
+                      control={control}
+                    />
                   )}
                 </Show>
-              </Show>
+                <Show when={props.modelControlsVisible ?? true}>
+                  {props.modelControl}
+                  <Show when={view.variant} keyed>
+                    {(control) => (
+                      <Show when={control.options().length > 1}>
+                        <ComposerEditorConfiguredSelect
+                          mobileDrawer
+                          title={i18n.t("ui.promptInput.chooseVariant")}
+                          keybind={["Shift", "Mod", "D"]}
+                          control={control}
+                          class={control.current() === "default" ? "composer-variant-default" : undefined}
+                        />
+                      </Show>
+                    )}
+                  </Show>
+                </Show>
+              </div>
             </div>
+            <Show when={dictating() ? view.dictation : undefined} keyed>
+              {(dictation) => (
+                <ComposerEditorDictationBar
+                  dictation={dictation}
+                  cancelKeybind={props.exitShellKeybind ?? ["ESC"]}
+                />
+              )}
+            </Show>
           </div>
           <div data-slot="composer-actions" class="flex shrink-0 items-center">
             <Show when={state.mode === "normal"}>
-              <ComposerEditorAlternateDelivery
-                controller={props.controller}
-                keybind={props.alternateKeybind ?? ["Mod", "Enter"]}
-              />
+              <Show when={!dictating()}>
+                <ComposerEditorAlternateDelivery
+                  controller={props.controller}
+                  keybind={props.alternateKeybind ?? ["Mod", "Enter"]}
+                />
+              </Show>
+              <Show when={!view.draftOnly && view.dictation} keyed>
+                {(dictation) => (
+                  <ComposerEditorDictationButton
+                    dictation={dictation}
+                    disabled={props.disabled || props.readOnly}
+                  />
+                )}
+              </Show>
             </Show>
             <Show when={state.mode === "shell"}>
               <Button
@@ -1399,6 +1432,307 @@ function ComposerEditorAlternateDelivery(props: { controller: ComposerEditorMode
         </Tooltip>
       )}
     </Show>
+  )
+}
+
+function formatDictationTimer(totalSeconds: number) {
+  const clamped = Math.max(0, Math.floor(totalSeconds))
+  const minutes = Math.floor(clamped / 60)
+  const seconds = clamped % 60
+
+  return `${minutes}:${String(seconds).padStart(2, "0")}`
+}
+
+function ComposerEditorDictationBar(props: {
+  dictation: ComposerDictationControl
+  cancelKeybind: string[]
+}) {
+  const i18n = useI18n()
+  const transcribing = () => props.dictation.status() === "transcribing"
+
+  return (
+    <div
+      data-slot="composer-dictation-bar"
+      class="absolute inset-0 flex items-center animate-in fade-in duration-150"
+    >
+      <Tooltip
+        placement="top"
+        inactive={transcribing()}
+        value={
+          <>
+            {i18n.t("ui.promptInput.dictateCancel")}
+            <Keybind keys={props.cancelKeybind} variant="neutral" />
+          </>
+        }
+      >
+        <IconButton
+          data-action="composer-dictate-cancel"
+          type="button"
+          size="large"
+          variant="ghost-muted"
+          disabled={transcribing()}
+          aria-label={i18n.t("ui.promptInput.dictateCancel")}
+          icon={<Icon name="xmark-small" />}
+          onMouseDown={(event) => event.preventDefault()}
+          onClick={(event) => {
+            event.preventDefault()
+            event.stopPropagation()
+
+            if (!transcribing()) props.dictation.onCancel()
+          }}
+        />
+      </Tooltip>
+      <div data-slot="composer-dictation-waveform" class="mx-2 h-7 min-w-0 flex-1">
+        <ComposerDictationWaveform
+          level={props.dictation.level}
+          transcribing={transcribing}
+        />
+      </div>
+      <span
+        role="timer"
+        aria-live="off"
+        data-slot="composer-dictation-timer"
+        class="me-2.5 shrink-0 select-none text-[12px] leading-4 text-v2-text-text-muted"
+      >
+        {formatDictationTimer(props.dictation.elapsedSeconds())}
+      </span>
+    </div>
+  )
+}
+
+function ComposerDictationWaveform(props: {
+  level: () => number
+  transcribing: () => boolean
+}) {
+  let canvas: HTMLCanvasElement | undefined
+
+  onMount(() => {
+    const element = canvas
+
+    if (!element) return
+    const ctx = element.getContext("2d")
+
+    if (!ctx) return
+
+    const barWidth = 2
+    const step = 4.5
+    const scrollSpeed = 45
+    const maxSamples = 260
+    const samples = Array.from({ length: maxSamples }, () => 0)
+    let scrollOffset = 0
+    let smoothed = 0
+    let elapsed = 0
+    let lastTime: number | undefined
+    let width = 0
+    let height = 0
+    let dpr = 1
+    let reduced = prefersReducedMotion()
+    let ink = getComputedStyle(element).color || "#888888"
+    let frame: number | undefined
+
+    const syncSize = () => {
+      const rect = element.getBoundingClientRect()
+      dpr = Math.max(1, window.devicePixelRatio || 1)
+      width = Math.max(0, rect.width)
+      height = Math.max(0, rect.height)
+      const targetWidth = Math.max(1, Math.round(width * dpr))
+      const targetHeight = Math.max(1, Math.round(height * dpr))
+
+      if (element.width !== targetWidth) element.width = targetWidth
+
+      if (element.height !== targetHeight) element.height = targetHeight
+    }
+
+    const syncTheme = () => {
+      ink = getComputedStyle(element).color || "#888888"
+    }
+
+    syncSize()
+
+    const resizeObserver = new ResizeObserver(() => {
+      syncSize()
+    })
+
+    resizeObserver.observe(element)
+
+    const themeObserver = new MutationObserver(syncTheme)
+    themeObserver.observe(document.documentElement, {
+      attributes: true,
+      attributeFilter: ["class", "style", "data-theme", "data-color-scheme"],
+    })
+
+    const stopReduced = observeReducedMotion(() => {
+      reduced = prefersReducedMotion()
+    })
+
+    const drawBar = (x: number, centerY: number, minHalf: number, maxHalf: number, amplitude: number) => {
+      const clamped = Math.max(0, Math.min(1, amplitude))
+      const half = minHalf + clamped * (maxHalf - minHalf)
+      ctx.globalAlpha = 0.26 + clamped * 0.68
+      ctx.beginPath()
+      ctx.moveTo(x * dpr, (centerY - half) * dpr)
+      ctx.lineTo(x * dpr, (centerY + half) * dpr)
+      ctx.stroke()
+    }
+
+    const renderFrame = (now: number) => {
+      frame = requestAnimationFrame(renderFrame)
+
+      if (document.hidden || width <= 0 || height <= 0) {
+        lastTime = now
+
+        return
+      }
+
+      const dt = lastTime === undefined ? 1 / 60 : Math.min(0.05, Math.max(0, (now - lastTime) / 1_000))
+      lastTime = now
+      elapsed += dt
+
+      const target = props.transcribing() ? 0 : Math.max(0, Math.min(1, props.level()))
+      const rate = target > smoothed ? 28 : 9
+      smoothed += (target - smoothed) * (1 - Math.exp(-dt * rate))
+
+      const voiced =
+        smoothed > 0.025
+          ? Math.min(1, smoothed * (0.84 + 0.16 * Math.sin(elapsed * 19) * Math.cos(elapsed * 11)))
+          : 0
+
+      ctx.clearRect(0, 0, element.width, element.height)
+      ctx.strokeStyle = ink
+      ctx.lineWidth = barWidth * dpr
+      ctx.lineCap = "round"
+
+      const centerY = height / 2
+      const minHalf = 1
+      const maxHalf = Math.max(3, Math.min(10.5, height / 2 - 2))
+
+      if (reduced) {
+        const count = Math.max(1, Math.floor(width / step))
+        const startX = (width - (count - 1) * step) / 2
+        const mid = (count - 1) / 2
+
+        for (let i = 0; i < count; i++) {
+          const dist = Math.abs(i - mid) / Math.max(1, Math.min(10, count / 2))
+          const envelope = dist >= 1 ? 0 : Math.pow(Math.cos((dist * Math.PI) / 2), 2)
+          drawBar(startX + i * step, centerY, minHalf, maxHalf, props.transcribing() ? 0 : smoothed * envelope)
+        }
+
+        ctx.globalAlpha = 1
+
+        return
+      }
+
+      if (props.transcribing()) {
+        const decay = Math.exp(-dt * 6)
+
+        for (let i = 0; i < samples.length; i++) {
+          samples[i] = (samples[i] ?? 0) * decay
+        }
+      }
+
+      if (!props.transcribing()) {
+        scrollOffset += scrollSpeed * dt
+
+        while (scrollOffset >= step) {
+          scrollOffset -= step
+          samples.push(voiced)
+
+          if (samples.length > maxSamples) samples.shift()
+        }
+      }
+
+      const newestIndex = samples.length - 1
+
+      for (let i = newestIndex; i >= 0; i--) {
+        const x = width - scrollOffset - (newestIndex - i) * step
+
+        if (x < -step) break
+        const base = samples[i] ?? 0
+        const birth = i === newestIndex && !props.transcribing() ? Math.min(1, scrollOffset / step) : 1
+
+        const shimmer = props.transcribing()
+          ? 0.24 * Math.pow(0.5 + 0.5 * Math.sin(elapsed * 5.5 - x * 0.055), 2)
+          : 0
+
+        drawBar(x, centerY, minHalf, maxHalf, Math.max(base * birth, shimmer))
+      }
+
+      ctx.globalAlpha = 1
+    }
+
+    frame = requestAnimationFrame(renderFrame)
+
+    onCleanup(() => {
+      if (frame !== undefined) cancelAnimationFrame(frame)
+      resizeObserver.disconnect()
+      themeObserver.disconnect()
+      stopReduced()
+    })
+  })
+
+  return <canvas ref={canvas} aria-hidden="true" class="block size-full text-v2-text-text-base" />
+}
+
+function ComposerEditorDictationButton(props: {
+  dictation: ComposerDictationControl
+  disabled?: boolean
+}) {
+  const i18n = useI18n()
+  const status = () => props.dictation.status()
+  const busy = () => status() === "starting" || status() === "transcribing"
+  const activeBar = () => status() === "recording" || status() === "transcribing"
+
+  const label = () => {
+    const current = status()
+
+    if (current === "starting") return i18n.t("ui.promptInput.dictateStarting")
+
+    if (current === "recording") return i18n.t("ui.promptInput.dictateFinish")
+
+    if (current === "transcribing") return i18n.t("ui.promptInput.dictateTranscribing")
+
+    if (current === "done") return i18n.t("ui.promptInput.dictateDone")
+
+    return i18n.t("ui.promptInput.dictate")
+  }
+
+  const buttonStyle = () => {
+    if (status() === "done") return { color: "var(--v2-state-fg-success)" }
+
+    return undefined
+  }
+
+  const iconName = () => {
+    const current = status()
+
+    if (current === "recording" || current === "done") return "check"
+
+    return "microphone"
+  }
+
+  return (
+    <Tooltip placement="top" inactive={props.disabled} value={label()}>
+      <IconButton
+        data-action="composer-dictate"
+        type="button"
+        size="large"
+        variant={activeBar() ? "neutral" : "ghost-muted"}
+        disabled={props.disabled}
+        aria-label={label()}
+        aria-pressed={status() === "recording"}
+        aria-busy={busy()}
+        class="me-1.5"
+        style={buttonStyle()}
+        icon={busy() ? <Loader class="size-4" /> : <Icon name={iconName()} />}
+        onMouseDown={(event) => event.preventDefault()}
+        onClick={(event) => {
+          event.preventDefault()
+          event.stopPropagation()
+
+          if (!props.disabled && !busy()) props.dictation.onToggle()
+        }}
+      />
+    </Tooltip>
   )
 }
 

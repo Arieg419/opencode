@@ -33,9 +33,34 @@ export type FatalRendererErrorLog = {
   os?: DesktopOS
 }
 
+export type HexDictationStartResult =
+  | { status: "recording" }
+  | {
+      status: "error"
+      code: "unsupported" | "not-installed" | "not-ready" | "busy" | "failed"
+      message?: string
+    }
+
+export type HexDictationFinishResult =
+  | { status: "transcribed"; transcript: string }
+  | { status: "empty" }
+  | {
+      status: "error"
+      code: "not-active" | "failed"
+      message?: string
+    }
+
+export type HexDictationBridge = {
+  start(): Promise<HexDictationStartResult>
+  finish(): Promise<HexDictationFinishResult>
+  cancel(): Promise<void>
+  onLevel?(cb: (level: number) => void): () => void
+}
+
 type PlatformBase = {
   requestMicrophone?(): Promise<boolean>
   setVoiceCallActive?(active: boolean): Promise<void>
+  hexDictation?: HexDictationBridge
   /** App version */
   version?: string
 

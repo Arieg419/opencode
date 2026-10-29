@@ -45,6 +45,7 @@ const newIcons = {
   "globe-plus": `<path d="M9.5 11.5H12.5M12.5 11.5H15.5M12.5 11.5V8.5M12.5 11.5V14.5" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/><path d="M8 1C11.866 1 15 4.13401 15 8C15 8.11231 14.9964 8.22395 14.9912 8.33496C14.9358 7.48617 14.4589 6.75503 13.7656 6.34668C13.1525 4.20296 11.3791 2.55021 9.16602 2.11426C10.0489 3.35264 10.6663 4.93158 10.8975 6.58105C10.3489 7.03965 10 7.72909 10 8.5H6.01465C6.13241 10.6267 6.98934 12.6854 8.20996 13.9941C8.44758 13.986 8.68133 13.9618 8.91113 13.9268C9.10021 13.9725 9.29688 14 9.5 14H10V14.5C10 14.5691 10.0043 14.6374 10.0098 14.7051C9.37302 14.8957 8.69876 15 8 15C4.13401 15 1 11.866 1 8C1 4.13401 4.13401 1 8 1ZM2.02246 8.5C2.24434 11.1886 4.23728 13.3729 6.83301 13.8848C5.78755 12.4178 5.11145 10.4737 5.0127 8.5H2.02246ZM6.83301 2.11426C4.23719 2.62603 2.24434 4.81135 2.02246 7.5H5.0127C5.11147 5.52603 5.78728 3.58126 6.83301 2.11426ZM8 2.24219C6.89188 3.55495 6.12676 5.49755 6.01562 7.5H9.98438C9.87324 5.49755 9.10812 3.55495 8 2.24219Z" fill="currentColor"/>`,
   diff: `<path d="M4.5 6.5H8M8 6.5H11.5M8 6.5V3M8 6.5V10" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/><path d="M4.5 12.5H11.5" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/>`,
   providers: `<path d="M13.5 4.5V2.5H11.5M13.5 4.5H15.5M13.5 4.5V8M13.5 8H15.5M13.5 8V8.5V11.5M13.5 11.5V13.5H11.5M13.5 11.5H15.5M2.5 8H0.5M2.5 8V4.5M2.5 8V11.5M2.5 4.5V2.5H4.5M2.5 4.5H0.5M2.5 11.5V13.5H4.5M2.5 11.5H0.5M4.5 13.5V15.5M4.5 13.5H8M8 13.5V15.5M8 13.5H11.5M11.5 13.5V15.5M11.5 2.5V0.5M11.5 2.5H8M8 2.5V0.5M8 2.5H4.5M4.5 2.5V0.5M5.5 10.5V5.5H10.5V10.5H5.5Z" stroke-linecap="round" stroke-linejoin="round" stroke="currentColor"/>`,
+  microphone: `<rect x="6" y="1.5" width="4" height="7.5" rx="2" stroke="currentColor"/><path d="M3.5 7a4.5 4.5 0 0 0 9 0M8 11.5v3M6 14.5h4" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round"/>`,
 }
 
 type NewIconName = keyof typeof newIcons
@@ -123,6 +124,7 @@ const replacements: Partial<Record<IconName, { name: NewIconName; rotate?: numbe
   providers: { name: "providers" },
   review: { name: "diff" },
   "outline-globe-plus": { name: "globe-plus" },
+  microphone: { name: "microphone" },
 }
 
 // Still drawn with today's artwork under the experiment, awaiting a new design. Uses in the desktop app in brackets.

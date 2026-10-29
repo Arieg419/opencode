@@ -359,6 +359,13 @@ export const dict = {
   "prompt.toast.shellSendFailed.title": "Failed to send shell command",
   "prompt.toast.commandSendFailed.title": "Failed to send command",
   "prompt.toast.promptSendFailed.title": "Failed to send prompt",
+  "prompt.toast.hexNotInstalled.title": "Hex is not installed",
+  "prompt.toast.hexNotInstalled.description": "Install Hex on macOS to dictate into the prompt.",
+  "prompt.toast.hexNotReady.title": "Hex needs setup",
+  "prompt.toast.hexNotReady.description": "Finish microphone and model setup in Hex, then try again.",
+  "prompt.toast.hexBusy.title": "Hex is already recording",
+  "prompt.toast.hexNoSpeech.title": "No speech detected",
+  "prompt.toast.hexFailed.title": "Hex dictation failed",
 
   "dialog.mcp.title": "MCPs",
   "dialog.mcp.empty": "No MCPs configured",

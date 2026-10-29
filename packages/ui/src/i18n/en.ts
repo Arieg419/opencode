@@ -193,6 +193,13 @@ const source = {
   "ui.promptInput.steer": "Steer",
   "ui.promptInput.queue": "Queue",
   "ui.promptInput.steerHint": "Send without interrupting",
+  "ui.promptInput.dictate": "Dictate with Hex",
+  "ui.promptInput.dictateStarting": "Starting Hex…",
+  "ui.promptInput.dictateStop": "Stop dictation",
+  "ui.promptInput.dictateFinish": "Finish dictation",
+  "ui.promptInput.dictateCancel": "Cancel dictation",
+  "ui.promptInput.dictateTranscribing": "Transcribing…",
+  "ui.promptInput.dictateDone": "Dictated with Hex",
 
   "ui.tabs.close": "Close tab",
 

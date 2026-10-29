@@ -6,6 +6,8 @@ import type {
   DirectoryPickerOptions,
   FatalRendererError,
   FilePickerOptions,
+  HexDictationFinishResult,
+  HexDictationStartResult,
   PickedFiles,
   SaveFilePickerOptions,
   ServerReadyData,
@@ -52,6 +54,10 @@ export type ElectronAPI = {
   getWindowFocused(): Promise<boolean>
   requestMicrophone(): Promise<boolean>
   setVoiceCallActive(active: boolean): Promise<void>
+  hexDictationStart(): Promise<HexDictationStartResult>
+  hexDictationFinish(): Promise<HexDictationFinishResult>
+  hexDictationCancel(): Promise<void>
+  onHexDictationLevel(cb: (level: number) => void): () => void
   getWindowFullscreen(): Promise<boolean>
   onWindowFullscreenChanged(cb: (fullscreen: boolean) => void): () => void
   setWindowFocus(): Promise<void>

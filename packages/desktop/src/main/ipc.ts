@@ -9,6 +9,7 @@ import { Plugins } from "./plugin"
 import { DesktopFiles, openExternalURL } from "./files"
 import { appHandlers } from "./ipc-handlers/app"
 import { eventHandlers } from "./ipc-handlers/events"
+import { hexHandlers } from "./ipc-handlers/hex"
 import { pluginHandlers } from "./ipc-handlers/plugins"
 import { fileHandlers } from "./ipc-handlers/files"
 import { menuHandlers } from "./ipc-handlers/menu"
@@ -16,12 +17,13 @@ import { storageHandlers } from "./ipc-handlers/storage"
 import { windowHandlers } from "./ipc-handlers/window"
 import { IpcPortHandoff, IpcServerProtocolLive } from "./ipc-transport"
 import { ApplicationLifecycle } from "./lifecycle"
+import { HexDictation } from "./native/hex"
 import { showCliInstaller } from "./native/install-cli"
 import { createMenu, sendMenuCommand } from "./native/menu"
 import { DesktopCli } from "./service/desktop-cli"
 import { getLastFocusedWindow } from "./windows"
 
-const services = Layer.mergeAll(DesktopFiles.layer, Plugins.layer)
+const services = Layer.mergeAll(DesktopFiles.layer, Plugins.layer, HexDictation.layer)
 
 const handlers = Layer.mergeAll(
   appHandlers,
@@ -31,6 +33,7 @@ const handlers = Layer.mergeAll(
   menuHandlers,
   eventHandlers,
   pluginHandlers,
+  hexHandlers,
 )
 
 export const layer = RpcServer.layer(DesktopRpcs, { disableFatalDefects: true }).pipe(

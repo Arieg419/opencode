@@ -6,7 +6,13 @@ export { currentRoute, type LayoutRoute, useCurrentRoute } from "./shell/state/l
 
 export { loadLocaleDict, normalizeLocale, type Locale, useLanguage } from "./runtime/i18n/language"
 
-export { type FatalRendererErrorLog, type Platform, PlatformProvider } from "./runtime/platform/platform"
+export {
+  type FatalRendererErrorLog,
+  type HexDictationFinishResult,
+  type HexDictationStartResult,
+  type Platform,
+  PlatformProvider,
+} from "./runtime/platform/platform"
 
 export { ServerConnection, useServers } from "./runtime/server/registry"
 

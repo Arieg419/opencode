@@ -40,6 +40,15 @@ export function createDesktopPlatform(api: ElectronAPI, windowState: DesktopWind
     windowFullscreen,
     requestMicrophone: () => api.requestMicrophone(),
     setVoiceCallActive: (active) => api.setVoiceCallActive(active),
+    hexDictation:
+      os === "macos"
+        ? {
+            start: () => api.hexDictationStart(),
+            finish: () => api.hexDictationFinish(),
+            cancel: () => api.hexDictationCancel(),
+            onLevel: (cb) => api.onHexDictationLevel(cb),
+          }
+        : undefined,
     setTrafficLightsPosition: (position) => api.setTrafficLightsPosition(position),
     getPinchZoomEnabled: () => api.getPinchZoomEnabled(),
     setPinchZoomEnabled,
