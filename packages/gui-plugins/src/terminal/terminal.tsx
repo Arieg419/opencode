@@ -546,7 +546,10 @@ export const Terminal = (props: TerminalProps) => {
       />
       <Show when={failureText()}>
         {(text) => (
-          <div class="absolute inset-x-0 top-0 px-6 py-3 text-12-regular text-text-danger-base pointer-events-none">
+          <div
+            class="absolute inset-x-0 top-0 px-6 py-3 text-12-regular text-text-danger-base pointer-events-none"
+            style={{ "background-color": terminalColors().background }}
+          >
             {text()}
           </div>
         )}
