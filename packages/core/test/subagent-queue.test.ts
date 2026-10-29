@@ -214,6 +214,36 @@ describe("SubagentQueue", () => {
     }).pipe(Effect.scoped),
   )
 
+  it.live("reads the cap from OPENCODE_CONFIG and OPENCODE_CONFIG_CONTENT, with substitution", () =>
+    Effect.gen(function* () {
+      const { root } = yield* setup({ subagent_concurrency: 1 })
+      const global = yield* Global.Service
+      const dir = yield* Effect.acquireRelease(
+        Effect.promise(() => tmpdir()),
+        (dir) => Effect.promise(() => dir[Symbol.asyncDispose]()),
+      )
+      const file = path.join(dir.path, "custom.jsonc")
+      yield* Effect.promise(() =>
+        Bun.write(file, `{ "experimental": { "subagent_concurrency": {env:OPENCODE_TEST_SUBAGENT_CAP} } }`),
+      )
+      process.env.OPENCODE_TEST_SUBAGENT_CAP = "2"
+      yield* Effect.addFinalizer(() => Effect.sync(() => delete process.env.OPENCODE_TEST_SUBAGENT_CAP))
+      const limit = (options: SubagentQueue.Options) =>
+        SubagentQueue.Service.use((queue) => queue.limit(root)).pipe(
+          Effect.provide(
+            AppNodeBuilder.build(SubagentQueue.configured(options), [
+              Global.node.replace(Layer.succeed(Global.Service, global)),
+            ]),
+          ),
+        )
+      expect(yield* limit({})).toBe(1)
+      expect(yield* limit({ file })).toBe(2)
+      expect(yield* limit({ file, content: `{ "experimental": { "subagent_concurrency": 3 } }` })).toBe(3)
+      // Malformed content is rejected like any other config source, so the next source's cap applies.
+      expect(yield* limit({ file, content: `{ "experimental": { "subagent_concurrency": 3 }` })).toBe(2)
+    }).pipe(Effect.scoped),
+  )
+
   it.live("stopping, escaping or removing a queued subagent takes it out of line for good", () =>
     Effect.gen(function* () {
       const { sessions, background } = yield* setup({ subagent_concurrency: 1 })

@@ -111,6 +111,41 @@ export const testLayer = (
     }),
   )
 
+const decodeInfo = Schema.decodeUnknownOption(Info, { errors: "all", onExcessProperty: "ignore" })
+
+/** Parses one substituted config document, logging why it was rejected; undefined when rejected. */
+export const parseInfo = Effect.fn("Config.parseInfo")(function* (text: string, source: string) {
+  const errors: ParseError[] = []
+  const input: unknown = parse(text, errors, { allowTrailingComma: true })
+  if (errors.length) {
+    yield* Effect.logWarning("configuration normalization diagnostic", {
+      source,
+      path: "$",
+      kind: "invalid",
+      action: "rejected malformed JSON or JSONC document",
+    })
+    return
+  }
+  const result = ConfigNormalize.normalize(input)
+  yield* Effect.forEach(result.diagnostics, (diagnostic) =>
+    Effect.logWarning("configuration normalization diagnostic", {
+      source,
+      path: diagnostic.path[0] === "$" ? "$" : `$.${diagnostic.path.join(".")}`,
+      kind: diagnostic.kind,
+      action: diagnostic.message,
+    }),
+  )
+  if (result.type === "rejected") return
+  const info = Option.getOrUndefined(decodeInfo(result.encoded))
+  if (info) return info
+  yield* Effect.logWarning("configuration normalization diagnostic", {
+    source,
+    path: "$",
+    kind: "invalid",
+    action: "rejected canonical configuration after final validation",
+  })
+})
+
 export const layer = (options?: Options) =>
   Layer.effect(
     Service,
@@ -128,40 +163,6 @@ export const layer = (options?: Options) =>
       const context = yield* Effect.context<FSUtil.Service | Global.Service | Location.Service>()
       const reloadLock = Semaphore.makeUnsafe(1)
       const updateLock = Semaphore.makeUnsafe(1)
-      const decodeOptions = { errors: "all", onExcessProperty: "ignore" } as const
-      const decodeInfo = Schema.decodeUnknownOption(Info, decodeOptions)
-      const parseInfo = Effect.fn("Config.parseInfo")(function* (text: string, source: string) {
-        const errors: ParseError[] = []
-        const input: unknown = parse(text, errors, { allowTrailingComma: true })
-        if (errors.length) {
-          yield* Effect.logWarning("configuration normalization diagnostic", {
-            source,
-            path: "$",
-            kind: "invalid",
-            action: "rejected malformed JSON or JSONC document",
-          })
-          return
-        }
-        const result = ConfigNormalize.normalize(input)
-        yield* Effect.forEach(result.diagnostics, (diagnostic) =>
-          Effect.logWarning("configuration normalization diagnostic", {
-            source,
-            path: diagnostic.path[0] === "$" ? "$" : `$.${diagnostic.path.join(".")}`,
-            kind: diagnostic.kind,
-            action: diagnostic.message,
-          }),
-        )
-        if (result.type === "rejected") return
-        const info = Option.getOrUndefined(decodeInfo(result.encoded))
-        if (info) return info
-        yield* Effect.logWarning("configuration normalization diagnostic", {
-          source,
-          path: "$",
-          kind: "invalid",
-          action: "rejected canonical configuration after final validation",
-        })
-      })
-
       const loadFile = Effect.fnUntraced(function* (filepath: string) {
         const text = yield* fs.readFileStringSafe(filepath)
         if (text === undefined) return

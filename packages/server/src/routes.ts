@@ -29,6 +29,7 @@ import { LocationServiceMap } from "@opencode/core/location-service-map"
 import { LocationActivity } from "@opencode/core/location-activity"
 import { ModelsDev } from "@opencode/core/models-dev"
 import { SessionRestart } from "@opencode/core/session/execution/restart"
+import { SubagentQueue } from "@opencode/core/session/subagent-queue"
 import { Schedule } from "@opencode/core/schedule"
 import { PluginUpdate } from "@opencode/core/plugin/update"
 import { SdkPlugins } from "@opencode/core/plugin/sdk"
@@ -136,6 +137,9 @@ function makeRoutes<AuthError, AuthServices>(
         file: options.config?.file,
         content: options.config?.content,
       }),
+    ),
+    SubagentQueue.node.replace(
+      SubagentQueue.configured({ file: options.config?.file, content: options.config?.content }),
     ),
     InstructionDiscovery.node.replace(InstructionDiscovery.configured({ project: options.config?.project })),
     ShellSelect.node.replace(ShellSelect.configured({ gitbash: options.windows?.gitbash })),

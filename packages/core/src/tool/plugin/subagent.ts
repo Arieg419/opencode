@@ -81,10 +81,11 @@ export const Plugin = {
     const warnIgnoredCap = Effect.fnUntraced(function* () {
       for (const entry of yield* config.entries()) {
         if (entry.type !== "document" || entry.info.experimental?.subagent_concurrency === undefined) continue
-        const source = entry.path ?? "inline config"
-        if (queue.files.includes(source) || warned.has(source)) continue
+        // Pathless documents are server-wide (inline content, integrations, remote config), never a project file.
+        const source = entry.path
+        if (source === undefined || queue.files.includes(source) || warned.has(source)) continue
         warned.add(source)
-        yield* Effect.logWarning("experimental.subagent_concurrency is only read from global config", { source })
+        yield* Effect.logWarning("experimental.subagent_concurrency is only read from server-wide config", { source })
       }
     })
 

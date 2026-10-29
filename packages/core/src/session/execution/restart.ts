@@ -9,6 +9,7 @@ import { Session } from "../../session.js"
 import { SessionEvent } from "../event.js"
 import { SessionExecution } from "../execution.js"
 import { SessionInbox } from "../inbox.js"
+import type { SessionMessage } from "../message.js"
 import { SessionSchema } from "../schema.js"
 import { SessionStore } from "../store.js"
 import { ImageNotice } from "../../image/notice.js"
@@ -203,15 +204,14 @@ export const layer = (options?: Options) =>
           return
         }
         if (yield* execution.isActive(recovery.childSessionID)) return
-        const output = store.context(recovery.childSessionID).pipe(
-          Effect.map((messages) => {
-            const assistant = messages.findLast(
+        const reply = (messages: ReadonlyArray<SessionMessage.Info>) =>
+          SubagentCompletion.text(
+            messages.findLast(
               (message) =>
                 message.type === "assistant" && message.time.completed !== undefined && message.error === undefined,
-            )
-            return SubagentCompletion.text(assistant)
-          }),
-        )
+            ),
+          )
+        const output = store.context(recovery.childSessionID).pipe(Effect.map(reply))
         // Only a child whose turn was in flight gets the restart notice and spends a resume attempt.
         const started = yield* store.isClaimed(recovery.childSessionID)
         if (started && !(yield* prepareResume(recovery.childSessionID))) {
@@ -219,13 +219,24 @@ export const layer = (options?: Options) =>
           return
         }
         // With no turn in flight and nothing waiting, its turn ended before the job recorded it, and resuming would
-        // send a conversation that ends on the assistant. Deliver that reply instead. A child with input waiting,
+        // send a conversation that ends on the assistant. Deliver how it ended instead. A child with input waiting,
         // such as one still in line for a slot, takes its turn below.
         if (!started && !(yield* SessionInbox.has(db, recovery.childSessionID, "input"))) {
+          if (child.outcome === "interrupted") {
+            yield* notify({ status: "cancelled" })
+            return
+          }
           yield* notify(
-            yield* output.pipe(
+            yield* store.context(recovery.childSessionID).pipe(
               Effect.match({
-                onSuccess: (text) => ({ status: "completed" as const, output: text }),
+                onSuccess: (messages): Pick<Job.Background, "status" | "output" | "error"> =>
+                  child.outcome === "failed"
+                    ? {
+                        status: "error",
+                        error:
+                          messages.findLast((message) => message.type === "idle")?.error?.message ?? "Subagent failed",
+                      }
+                    : { status: "completed", output: reply(messages) },
                 onFailure: (error) => ({ status: "error" as const, error: error.message }),
               }),
             ),
