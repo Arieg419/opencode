@@ -1,4 +1,59 @@
+import { PersistentPty } from "@opencode/schema/persistent-pty"
+import { Schema } from "effect"
 import type { ExperimentalPersistentPtyConnectTokenInput, OpenCodeClient, PtyConnectTokenInput } from "../promise"
+
+export const PersistentPtyMessage = Schema.Union([
+  Schema.Struct({
+    type: Schema.Literal("attached"),
+    inputProtocol: Schema.optional(Schema.Number),
+    info: PersistentPty.Info,
+    role: Schema.Literals(["controller", "observer"]),
+    generation: Schema.Number,
+    replay: Schema.Struct({
+      requestedOffset: Schema.Number,
+      availableOffset: Schema.Number,
+      endOffset: Schema.Number,
+      truncated: Schema.Boolean,
+    }),
+  }),
+  Schema.Struct({ type: Schema.Literal("replay_complete"), endOffset: Schema.Number }),
+  Schema.Struct({
+    type: Schema.Literal("resized"),
+    cols: Schema.Number,
+    rows: Schema.Number,
+    generation: Schema.Number,
+    checkpoint: Schema.String,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("controller_changed"),
+    attachmentID: Schema.optional(Schema.NullOr(Schema.String)),
+    generation: Schema.Number,
+  }),
+  Schema.Struct({
+    type: Schema.Literal("exited"),
+    exitCode: Schema.optional(Schema.NullOr(Schema.Number)),
+    finalOffset: Schema.Number,
+  }),
+  Schema.Struct({ type: Schema.Literal("title_changed"), title: Schema.String }),
+  Schema.Struct({ type: Schema.Literal("foreground_process_changed"), process: Schema.NullOr(Schema.String) }),
+])
+export type PersistentPtyMessage = typeof PersistentPtyMessage.Type
+
+const decodeMessage = Schema.decodeUnknownOption(Schema.fromJsonString(PersistentPtyMessage))
+
+export function decodePersistentPtyMessage(text: string) {
+  return decodeMessage(text)
+}
+
+export function persistentPtyFrame(size: { cols: number; rows: number }, data?: Uint8Array) {
+  const frame = new Uint8Array(5 + (data?.byteLength ?? 0))
+  const view = new DataView(frame.buffer)
+  frame[0] = data ? 1 : 0
+  view.setUint16(1, size.cols)
+  view.setUint16(3, size.rows)
+  if (data) frame.set(data, 5)
+  return frame
+}
 
 export type PtyClientOptions = {
   readonly url: string
