@@ -26,6 +26,7 @@ import { Plugin } from "@opencode/core/plugin"
 import { PluginHooks } from "@opencode/core/plugin/hooks"
 import { Provider } from "@opencode/core/provider"
 import { Session } from "@opencode/core/session"
+import { SharedRefresh } from "@opencode/core/shared-refresh"
 import { InstructionEntry } from "@opencode/core/session/instruction-entry"
 import { PersistentPty } from "@opencode/core/persistent-pty"
 import { LocationServiceMap } from "@opencode/core/location-service-map"
@@ -111,6 +112,7 @@ export const makePluginTestLayer = (permission = permissionLayer, generate = gen
       KV.node,
       Mcp.node,
       Session.node,
+      SharedRefresh.node,
       InstructionEntry.node,
       PersistentPty.node,
       LocationServiceMap.node,

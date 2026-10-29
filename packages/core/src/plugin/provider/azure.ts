@@ -11,6 +11,7 @@ import { Integration } from "../../integration.js"
 import { IntegrationConnection } from "../../integration/connection.js"
 import { Model } from "../../model.js"
 import { Provider } from "../../provider.js"
+import { SharedRefresh } from "../../shared-refresh.js"
 import { which } from "../../util/which.js"
 import type { PluginInternal } from "../internal.js"
 import { configuredSettings } from "./configured.js"
@@ -73,6 +74,7 @@ export function make(
       const resourceIDs = new Map<string, string>()
       const loading = Semaphore.makeUnsafe(1)
       const discovery = yield* FiberHandle.make<void, never>()
+      const remoteDeployments = yield* (yield* SharedRefresh.Service).subscriber<readonly Deployment[]>()
       const loaded: {
         resource?: string
         url?: string
@@ -295,23 +297,26 @@ export function make(
             yield* ctx.model.reload()
           }
         }
-        if (!connection || !name || !url) return
-        const credential = yield* ctx.integration.connection
-          .resolve(connection)
-          .pipe(Effect.orElseSucceed(() => undefined))
+        const credential =
+          connection && name && url
+            ? yield* ctx.integration.connection.resolve(connection).pipe(Effect.orElseSucceed(() => undefined))
+            : undefined
         if (
+          !connection ||
+          !name ||
+          !url ||
           !credential ||
           credential.type === "oauth" ||
           (credential.type === "external" && credential.methodID !== methodID)
         )
-          return
-        const found = yield* deployments(url, name, credential).pipe(
+          return yield* remoteDeployments.release
+        const found = yield* remoteDeployments.use({
+          key: `azure:${IntegrationConnection.key(connection)}:${url}`,
           // Azure promises no order; normalize it so a reordered response does not rebuild the model list.
-          Effect.map((list) => list.toSorted((a, b) => a.name.localeCompare(b.name))),
-          Effect.catch((cause) =>
-            Effect.logWarning("failed to sync Azure deployments", { cause }).pipe(Effect.as(undefined)),
+          load: deployments(url, name, credential).pipe(
+            Effect.map((list) => list.toSorted((a, b) => a.name.localeCompare(b.name))),
           ),
-        )
+        })
         if (!found) return
         if (
           loaded.connection !== connection ||
@@ -420,8 +425,12 @@ export function make(
         Stream.runForEach(() => refresh()),
         Effect.forkScoped({ startImmediately: true }),
       )
+      yield* remoteDeployments.changes.pipe(
+        Stream.runForEach(() => FiberHandle.run(discovery, discover())),
+        Effect.forkScoped,
+      )
       // Deployments load in the background so startup never waits on Azure; the catalog serves until they arrive.
-      // Later changes load when the connection changes, so a new deployment needs a reconnect or restart.
+      // Later changes arrive with the shared background refresh.
       yield* refresh().pipe(Effect.forkScoped)
 
       // Entra bearer tokens are minted per request from the target URL's scope, so they are injected

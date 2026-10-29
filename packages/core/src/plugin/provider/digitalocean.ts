@@ -7,9 +7,11 @@ import { App } from "../../app.js"
 import { Bus } from "../../bus.js"
 import { Credential } from "../../credential.js"
 import { Integration } from "../../integration.js"
+import { IntegrationConnection } from "../../integration/connection.js"
 import { Model } from "../../model.js"
 import { OauthCallbackPage } from "../../oauth/page.js"
 import { Provider } from "../../provider.js"
+import { SharedRefresh } from "../../shared-refresh.js"
 import type { PluginInternal } from "../internal.js"
 
 const providerID = Provider.ID.make("digitalocean")
@@ -115,41 +117,43 @@ export const DigitalOceanPlugin = define({
   id: "opencode.provider.digitalocean",
   effect: Effect.fn(function* (ctx) {
     const bus = yield* Bus.Service
+    const shared = yield* SharedRefresh.Service
     const http = HttpClient.filterStatusOk(yield* HttpClient.HttpClient)
     const loading = Semaphore.makeUnsafe(1)
-    const loaded: { access?: string; routers: (typeof RoutersResponse.Type)["model_routers"] } = { routers: [] }
+    const routers = yield* shared.subscriber<(typeof RoutersResponse.Type)["model_routers"]>()
+    const loaded: { routers: (typeof RoutersResponse.Type)["model_routers"] } = { routers: [] }
 
     const load = Effect.fn("DigitalOceanPlugin.load")(function* () {
       const connection = yield* ctx.integration.connection.active(integrationID)
       const credential = connection
         ? yield* ctx.integration.connection.resolve(connection).pipe(Effect.orElseSucceed(() => undefined))
         : undefined
-      if (credential?.type !== "oauth" || credential.methodID !== methodID) {
-        loaded.access = undefined
+      if (
+        credential?.type !== "oauth" ||
+        credential.methodID !== methodID ||
+        (credential.expires !== 0 && credential.expires <= (yield* Clock.currentTimeMillis))
+      ) {
         loaded.routers = []
+        yield* routers.release
         return
       }
-      if (loaded.access !== credential.access) {
-        loaded.access = credential.access
-        loaded.routers = []
-      }
-      if (credential.expires !== 0 && credential.expires <= (yield* Clock.currentTimeMillis)) return
-      const result = yield* http
-        .execute(
-          HttpClientRequest.get(routersEndpoint).pipe(
-            HttpClientRequest.bearerToken(credential.access),
-            HttpClientRequest.acceptJson,
-            HttpClientRequest.setHeader("User-Agent", App.useragent(ctx.app)),
+      const result = yield* routers.use({
+        key: `digitalocean:${IntegrationConnection.key(connection)}`,
+        load: http
+          .execute(
+            HttpClientRequest.get(routersEndpoint).pipe(
+              HttpClientRequest.bearerToken(credential.access),
+              HttpClientRequest.acceptJson,
+              HttpClientRequest.setHeader("User-Agent", App.useragent(ctx.app)),
+            ),
+          )
+          .pipe(
+            Effect.flatMap(HttpClientResponse.schemaBodyJson(RoutersResponse)),
+            Effect.map((response) => response.model_routers),
+            Effect.timeout("10 seconds"),
           ),
-        )
-        .pipe(
-          Effect.flatMap(HttpClientResponse.schemaBodyJson(RoutersResponse)),
-          Effect.timeout("10 seconds"),
-          Effect.catch((cause) =>
-            Effect.logWarning("failed to sync DigitalOcean routers", { cause }).pipe(Effect.as(undefined)),
-          ),
-        )
-      if (result) loaded.routers = result.model_routers
+      })
+      loaded.routers = result ?? []
     })
 
     yield* ctx.integration.transform((draft) => {
@@ -174,6 +178,7 @@ export const DigitalOceanPlugin = define({
       Stream.runForEach(refresh),
       Effect.forkScoped({ startImmediately: true }),
     )
+    yield* routers.changes.pipe(Stream.runForEach(refresh), Effect.forkScoped)
     yield* refresh().pipe(Effect.forkScoped)
   }),
 } satisfies PluginInternal.InternalPlugin)

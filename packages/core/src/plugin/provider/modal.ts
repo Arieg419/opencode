@@ -6,6 +6,7 @@ import { Credential } from "../../credential.js"
 import { Integration } from "../../integration.js"
 import { ModalModels } from "../../modal/models.js"
 import { Provider } from "../../provider.js"
+import { SharedRefresh } from "../../shared-refresh.js"
 import type { PluginInternal } from "../internal.js"
 
 const providerID = Provider.ID.make("modal")
@@ -15,7 +16,9 @@ export const ModalPlugin = define({
   effect: Effect.fn(function* (ctx) {
     const providers = yield* Provider.Service
     const bus = yield* Bus.Service
+    const shared = yield* SharedRefresh.Service
     const loading = Semaphore.makeUnsafe(1)
+    const remoteModels = yield* shared.subscriber<ModalModels.Snapshot>()
     const loaded: {
       baseURL?: string
       models?: ModalModels.Snapshot
@@ -34,14 +37,16 @@ export const ModalPlugin = define({
         loaded.baseURL = undefined
         loaded.models = undefined
         loaded.connection = undefined
+        yield* remoteModels.release
         return
       }
-      const remote = yield* Effect.tryPromise({
-        try: () => ModalModels.load(baseURL, apiKey),
-        catch: (cause) => cause,
-      }).pipe(
-        Effect.catch((cause) => Effect.logWarning("failed to sync Modal models", { cause }).pipe(Effect.as(undefined))),
-      )
+      const remote = yield* remoteModels.use({
+        key: `modal:${credential?.type === "key" ? IntegrationConnection.key(connection) : "env:MODAL_PROXY_TOKEN"}:${baseURL}`,
+        load: Effect.tryPromise({
+          try: () => ModalModels.load(baseURL, apiKey),
+          catch: (cause) => cause,
+        }),
+      })
       if (
         IntegrationConnection.key(connection) !==
         IntegrationConnection.key(yield* ctx.integration.connection.active("modal"))
@@ -70,6 +75,7 @@ export const ModalPlugin = define({
       Stream.runForEach(refresh),
       Effect.forkScoped({ startImmediately: true }),
     )
+    yield* remoteModels.changes.pipe(Stream.runForEach(refresh), Effect.forkScoped)
     yield* refresh().pipe(Effect.forkScoped)
   }),
 } satisfies PluginInternal.InternalPlugin)
