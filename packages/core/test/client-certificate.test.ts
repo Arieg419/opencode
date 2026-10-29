@@ -145,7 +145,12 @@ describe("ClientCertificate", () => {
   it.live("refuses to send the certificate through an HTTPS proxy", () =>
     withEnv(
       // Windows env names are case-insensitive, so clearing `https_proxy` would also clear `HTTPS_PROXY`.
-      { HTTPS_PROXY: "https://proxy.test", https_proxy: "https://proxy.test", NO_PROXY: undefined, no_proxy: undefined },
+      {
+        HTTPS_PROXY: "https://proxy.test",
+        https_proxy: "https://proxy.test",
+        NO_PROXY: undefined,
+        no_proxy: undefined,
+      },
       () =>
         Effect.gen(function* () {
           yield* write("system", certificate(["llm.corp.test"]))
