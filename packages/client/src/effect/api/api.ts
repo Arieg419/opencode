@@ -2122,6 +2122,7 @@ export type EventSubscribeInput = {
         | "pty.deleted"
         | "persistent-pty.added"
         | "persistent-pty.removed"
+        | "persistent-pty.updated"
         | "shell.created"
         | "shell.exited"
         | "shell.deleted"
@@ -2236,6 +2237,7 @@ export type ExperimentalPersistentPtyListOutput = ReadonlyArray<{
   readonly pid: number
   readonly exitCode?: number | undefined
   readonly sessionID: Session.ID
+  readonly userTitle: string | null
   readonly foregroundProcess: string | null
   readonly size: { readonly cols: number; readonly rows: number }
   readonly output: { readonly head: number; readonly tail: number }
@@ -2263,6 +2265,7 @@ export type ExperimentalPersistentPtyCreateOutput = {
   readonly pid: number
   readonly exitCode?: number | undefined
   readonly sessionID: Session.ID
+  readonly userTitle: string | null
   readonly foregroundProcess: string | null
   readonly size: { readonly cols: number; readonly rows: number }
   readonly output: { readonly head: number; readonly tail: number }
@@ -2301,6 +2304,7 @@ export type ExperimentalPersistentPtyGetOutput = {
   readonly pid: number
   readonly exitCode?: number | undefined
   readonly sessionID: Session.ID
+  readonly userTitle: string | null
   readonly foregroundProcess: string | null
   readonly size: { readonly cols: number; readonly rows: number }
   readonly output: { readonly head: number; readonly tail: number }
@@ -2312,7 +2316,8 @@ export type ExperimentalPersistentPtyGetOperation<E = never> = (
 export type ExperimentalPersistentPtyUpdateInput = {
   readonly ptyID: Pty.ID
   readonly attachmentID?: string | undefined
-  readonly size: { readonly cols: number; readonly rows: number }
+  readonly size?: { readonly cols: number; readonly rows: number } | undefined
+  readonly title?: string | null | undefined
 }
 export type ExperimentalPersistentPtyUpdateOutput = {
   readonly id: Pty.ID
@@ -2324,6 +2329,7 @@ export type ExperimentalPersistentPtyUpdateOutput = {
   readonly pid: number
   readonly exitCode?: number | undefined
   readonly sessionID: Session.ID
+  readonly userTitle: string | null
   readonly foregroundProcess: string | null
   readonly size: { readonly cols: number; readonly rows: number }
   readonly output: { readonly head: number; readonly tail: number }
@@ -2344,6 +2350,7 @@ export type ExperimentalPersistentPtySnapshotOutput = {
     readonly pid: number
     readonly exitCode?: number | undefined
     readonly sessionID: Session.ID
+    readonly userTitle: string | null
     readonly foregroundProcess: string | null
     readonly size: { readonly cols: number; readonly rows: number }
     readonly output: { readonly head: number; readonly tail: number }

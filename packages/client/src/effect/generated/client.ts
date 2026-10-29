@@ -1534,7 +1534,7 @@ const EndpointExperimentalPersistentPtyUpdate =
     preserveEffect<ExperimentalPersistentPtyUpdateOutput>()(
       raw["persistentPty.update"]({
         params: { ptyID: input["ptyID"] },
-        payload: { attachmentID: input["attachmentID"], size: input["size"] },
+        payload: { attachmentID: input["attachmentID"], size: input["size"], title: input["title"] },
       }).pipe(
         Effect.mapError(mapClientError),
         Effect.map((value) => value.data),
