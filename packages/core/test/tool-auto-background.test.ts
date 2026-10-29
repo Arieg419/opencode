@@ -5,6 +5,7 @@ import { describe, expect } from "bun:test"
 import { Clock, Deferred, Duration, Effect, Exit, Fiber, Layer, Schema } from "effect"
 import { TestClock } from "effect/testing"
 import { Money } from "@opencode/schema/money"
+import { ID } from "@opencode/schema/shell"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { makeGlobalNode, makeLocationNode } from "@opencode/util/effect/app-node"
@@ -762,7 +763,7 @@ describe("auto-background tools and job controls", () => {
       const jobID = String(yielded.output?.jobID)
       expect(yielded.output?.status).toBe("running")
 
-      const terminal = yield* shell.wait(Shell.ID.ascending(jobID)).pipe(Effect.timeout("5 seconds"))
+      const terminal = yield* shell.wait(ID.make(jobID)).pipe(Effect.timeout("5 seconds"))
       expect(terminal.status).toBe("timeout")
       yield* jobs.awaitSessionBackground(session.id)
       const inbox = yield* sessions.inbox(session.id)
@@ -853,9 +854,27 @@ describe("auto-background tools and job controls", () => {
         },
       })
       const childExecID = String(childExec.output?.jobID)
+      const grandchild = yield* sessions.create({
+        parentID: childSessionID,
+        title: "grandchild",
+        agent: Agent.ID.make("reviewer"),
+        model: modelRef,
+      })
+      const grandchildShell = yield* executeTool(registry, {
+        sessionID: grandchild.id,
+        ...toolIdentity,
+        call: {
+          type: "tool-call",
+          id: "call-grandchild-bg-shell",
+          name: "shell",
+          input: { command: hangCommand, background: true },
+        },
+      })
+      const grandchildShellID = String(grandchildShell.output?.jobID)
       yield* Deferred.await(stepStarted).pipe(Effect.timeout("5 seconds"))
       expect((yield* jobs.get(childShellID))?.status).toBe("running")
       expect((yield* jobs.get(childExecID))?.status).toBe("running")
+      expect((yield* jobs.get(grandchildShellID))?.status).toBe("running")
 
       const stopSub = yield* executeTool(registry, {
         sessionID: session.id,
@@ -870,7 +889,9 @@ describe("auto-background tools and job controls", () => {
       expect(JSON.parse(stopSub.output.output)).toMatchObject({ id: childSessionID, status: "cancelled" })
       expect((yield* jobs.get(childShellID))?.status).toBe("cancelled")
       expect((yield* jobs.get(childExecID))?.status).toBe("cancelled")
+      expect((yield* jobs.get(grandchildShellID))?.status).toBe("cancelled")
       expect((yield* shell.list()).map((item) => String(item.id))).not.toContain(childShellID)
+      expect((yield* shell.list()).map((item) => String(item.id))).not.toContain(grandchildShellID)
 
       // 2) Session.remove cancels background shell + execute jobs on both parent and descendant sessions.
       const nextStepStarted = yield* Deferred.make<void>()

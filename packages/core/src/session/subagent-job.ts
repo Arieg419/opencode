@@ -33,7 +33,7 @@ const make = Effect.gen(function* () {
       const children = yield* store.list({ parentID: sessionID })
       yield* sessions.interrupt(sessionID)
       yield* jobs.cancelSession(sessionID)
-      yield* Effect.forEach(children, stopSubtree, { concurrency: 1, discard: true })
+      yield* Effect.forEach(children, (child) => stopSubtree(child.id), { concurrency: 1, discard: true })
       yield* execution.awaitIdle(sessionID)
     }).pipe(Effect.ignoreCause)
 
