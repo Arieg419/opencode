@@ -31,21 +31,22 @@ async function mount(
         onLevel={props().onLevel}
       />
     ),
-    { width: 10, height: 1, clock },
+    // Uncapped, a requested frame never waits on a clock timer, so idle() in run() returns before the next step.
+    { width: 10, height: 1, clock, maxFps: Number.POSITIVE_INFINITY },
   )
   let frames = 0
   app.renderer.on("frame", () => frames++)
   await app.renderOnce()
   return Object.assign(app, {
     clock,
-    /** Advances the clock in 5 ms steps beside another animation that ticks every `other` ms, and counts frames. */
+    /** Advances the clock in 5 ms steps beside another animation that ticks every `other` ms, and counts frames.
+     * Each step waits until the requested frame has drawn, so frames land on the step that requests them. */
     async run(ms: number, other = 0) {
       frames = 0
       const stop = other ? app.renderer.onAnimationTick(1000 / other, () => app.renderer.requestRender()) : undefined
       for (let elapsed = 5; elapsed <= ms; elapsed += 5) {
         clock.advance(5)
-        await Bun.sleep(0)
-        await Bun.sleep(0)
+        await app.renderer.idle()
       }
       stop?.()
       return frames
@@ -74,16 +75,12 @@ test("an attention glow becomes idle after ignition", async () => {
 })
 
 test.each([
-  // A requested frame draws asynchronously, on the same 5 ms clock step or a later one depending on the event loop,
-  // so frames alone come 50 to 55 ms apart.
-  { name: "alone", other: 0, min: 18, max: 20 },
-  { name: "beside a 25 fps animation", other: 40, min: 24, max: 24 },
-  { name: "beside a 50 fps animation", other: 20, min: 50, max: 50 },
+  { name: "alone", other: 0, frames: 20 },
+  { name: "beside a 25 fps animation", other: 40, frames: 25 },
+  { name: "beside a 50 fps animation", other: 20, frames: 50 },
 ])("a running pulse adds frames only up to 20 fps, $name", async (item) => {
   await using pulse = await mount(() => ({ active: true }))
-  const frames = await pulse.run(1000, item.other)
-  expect(frames).toBeGreaterThanOrEqual(item.min)
-  expect(frames).toBeLessThanOrEqual(item.max)
+  expect(await pulse.run(1000, item.other)).toBe(item.frames)
   expect(pulse.renderer.root.liveCount).toBe(0)
 })
 
