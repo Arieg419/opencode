@@ -131,13 +131,17 @@ describe("ClientCertificate", () => {
         network: { client_certificates: [{ hosts: ["user.test"], cert: "~/user.pem", key: "user.key" }] },
       })
       yield* write("system", {
-        network: { client_certificates: [{ hosts: ["*.corp.test"], cert: "/etc/corp.pem", key: "corp.key" }] },
+        network: {
+          client_certificates: [
+            { hosts: ["*.corp.test", "[0:0:0:0:0:0:0:1]"], cert: "/etc/corp.pem", key: "corp.key" },
+          ],
+        },
       })
       const certificates = yield* ClientCertificate.Service
       const rules = yield* certificates.rules()
       expect(rules).toEqual([
         {
-          hosts: ["*.corp.test"],
+          hosts: ["*.corp.test", "[::1]"],
           cert: path.resolve(root.path, "/etc/corp.pem"),
           key: path.join(root.path, "system", "corp.key"),
           passphraseFile: undefined,
@@ -145,6 +149,7 @@ describe("ClientCertificate", () => {
       ])
       expect(ClientCertificate.match(rules, "https://api.corp.test/v1")).toBe(rules[0])
       expect(ClientCertificate.match(rules, "https://API.corp.test./v1")).toBe(rules[0])
+      expect(ClientCertificate.match(rules, "https://[::1]/")).toBe(rules[0])
       expect(ClientCertificate.match(rules, "http://api.corp.test/v1")).toBeUndefined()
       expect(ClientCertificate.match(rules, "https://user.test/v1")).toBeUndefined()
     }).pipe(Effect.provide(layer())),

@@ -99,7 +99,8 @@ requests and model catalogs, and to no other host.
   `a.b.company.example` but not `company.example`. Write internationalized domains in their ASCII (`xn--`) form.
 - `cert` and `key` are PEM files. Paths can be absolute, start with `~/`, or be relative to the configuration file.
   OpenCode reads the files for each request, so a rotated certificate applies without a restart.
-- `passphrase_file` names a file holding the passphrase of an encrypted key. It is only needed for an encrypted key.
+- `passphrase_file` is the path to a file holding the passphrase of an encrypted key, with any trailing newline ignored.
+  Give the path itself, not a `{file:...}` reference, which would put the passphrase into the configuration.
 - The first entry whose `hosts` match is used.
 
 This is a machine setting, so OpenCode reads it only from managed and global configuration: macOS managed preferences
