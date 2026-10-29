@@ -250,7 +250,7 @@ const layer = Layer.effect(
             yield* permission.assert({
               action: tool.options?.permission ?? tool.id,
               resources: ["*"],
-              save: ["*"],
+              // No `save`: "always" would grant this tool project-wide, while runs get their allow from Unattended.
               metadata: { schedule: name, code: condition.code, allow: condition.allow },
               sessionID: session.id,
               agent: agent.id,

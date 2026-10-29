@@ -924,8 +924,9 @@ describe("Schedule", () => {
         agentRules = [{ action: "slack_read_thread", resource: "*", effect: "ask" }]
         const approved = yield* answer(watch, ["slack.read_thread"], "once")
         expect(approved.asked).toMatchObject([
-          { action: "slack_read_thread", save: ["*"], metadata: { code: watch, allow: ["slack.read_thread"] } },
+          { action: "slack_read_thread", metadata: { code: watch, allow: ["slack.read_thread"] } },
         ])
+        expect(approved.asked[0]?.save).toBeUndefined()
         expect(Exit.isSuccess(approved.created)).toBe(true)
 
         const rejected = yield* answer(watch, ["slack.read_thread"], "reject")
