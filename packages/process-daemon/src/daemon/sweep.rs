@@ -44,10 +44,7 @@ pub(super) fn runtime(directory: &Path, now: SystemTime) -> Result<()> {
     if !metadata.is_dir() || metadata.file_type().is_symlink() {
         return Ok(());
     }
-    let age = now.duration_since(metadata.modified()?).unwrap_or_default();
-    if age < STALE_RUNTIME_AGE {
-        return Ok(());
-    }
+    let old = now.duration_since(metadata.modified()?).unwrap_or_default() >= STALE_RUNTIME_AGE;
     let mut files = Vec::new();
     for entry in fs::read_dir(directory)? {
         let entry = entry?;
@@ -65,13 +62,12 @@ pub(super) fn runtime(directory: &Path, now: SystemTime) -> Result<()> {
 
     // Only a lock file or a parseable registration proves a daemon created this
     // directory; anything else, including an empty directory, is left alone.
-    let lock = match OpenOptions::new()
-        .read(true)
-        .write(true)
-        .open(directory.join(LOCK_FILE))
-    {
+    let lock_path = directory.join(LOCK_FILE);
+    let lock = match OpenOptions::new().read(true).write(true).open(&lock_path) {
         Ok(lock) => {
-            if lock.try_lock_exclusive().is_err() {
+            // An unlinked lock file means another sweep or a stopping daemon
+            // already owns this directory's removal.
+            if lock.try_lock_exclusive().is_err() || !platform::is_current_lock(&lock, &lock_path) {
                 return Ok(());
             }
             Some(lock)
@@ -82,11 +78,19 @@ pub(super) fn runtime(directory: &Path, now: SystemTime) -> Result<()> {
     let registration = fs::read(registration_path(directory))
         .ok()
         .and_then(|data| serde_json::from_slice::<Registration>(&data).ok());
-    if lock.is_none() {
-        match &registration {
-            Some(registration) if !platform::process_exists(registration.pid) => {}
-            _ => return Ok(()),
-        }
+    let dead = registration
+        .as_ref()
+        .is_some_and(|registration| !platform::process_exists(registration.pid));
+    // A daemon writes its registration only after locking a lock file it has
+    // verified is still linked (Unix), so a free lock with a dead registered pid
+    // proves abandonment at any age. Without that proof, the age guard covers a
+    // daemon that has created its directory but not yet locked it.
+    let abandoned = match lock {
+        Some(_) => old || (cfg!(unix) && dead),
+        None => old && dead,
+    };
+    if !abandoned {
+        return Ok(());
     }
 
     platform::remove_stale_endpoint(&fs::canonicalize(directory)?, registration.as_ref())?;
@@ -192,11 +196,36 @@ mod tests {
     }
 
     #[test]
+    #[cfg(unix)]
+    fn sweep_removes_young_runtime_with_free_lock_and_dead_pid() {
+        let root = Root::new();
+        let abandoned = root.runtime(&[LOCK_FILE], Some(dead_pid()));
+        let live = root.runtime(&[LOCK_FILE], Some(std::process::id()));
+        let locked = root.runtime(&[LOCK_FILE], Some(dead_pid()));
+        let unlocked_unregistered = root.runtime(&[LOCK_FILE], None);
+        let held = fs::File::open(locked.join(LOCK_FILE)).unwrap();
+        held.try_lock_exclusive().unwrap();
+
+        for directory in [&abandoned, &live, &locked, &unlocked_unregistered] {
+            runtime(directory, SystemTime::now()).unwrap();
+        }
+
+        assert!(!abandoned.exists());
+        assert!(live.join(REGISTRATION_FILE).exists());
+        assert!(locked.join(REGISTRATION_FILE).exists());
+        assert!(unlocked_unregistered.join(LOCK_FILE).exists());
+        drop(held);
+    }
+
+    #[test]
     fn sweep_without_lock_file_checks_registered_pid() {
         let root = Root::new();
         let live = root.runtime(&[], Some(std::process::id()));
         let dead = root.runtime(&[], Some(dead_pid()));
+        let young = root.runtime(&[], Some(dead_pid()));
 
+        runtime(&young, SystemTime::now()).unwrap();
+        assert!(young.join(REGISTRATION_FILE).exists());
         runtime(&live, later()).unwrap();
         runtime(&dead, later()).unwrap();
 

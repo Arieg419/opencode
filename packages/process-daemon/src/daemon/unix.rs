@@ -1,14 +1,17 @@
 use std::fs::{self, File, OpenOptions};
-use std::io::Write;
+use std::io::{ErrorKind, Write};
+use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
 use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
 use std::path::{Component, Path, PathBuf};
 use std::thread::{self, JoinHandle};
+use std::time::SystemTime;
 
 use anyhow::{Context, Result, anyhow, bail};
 use fs2::FileExt;
 use sha2::{Digest, Sha256};
 
+use super::sweep::STALE_RUNTIME_AGE;
 use super::{LOCK_FILE, Registration, read_registration, registration_path};
 use crate::protocol::PROTOCOL_VERSION;
 use crate::transport::Listener;
@@ -24,16 +27,7 @@ pub(super) struct Runtime {
 impl Runtime {
     pub fn bind(directory: &Path) -> Result<(Self, Listener)> {
         let directory = directory.to_path_buf();
-        fs::create_dir_all(&directory)?;
-        fs::set_permissions(&directory, fs::Permissions::from_mode(0o700))?;
-        let lock = OpenOptions::new()
-            .create(true)
-            .truncate(false)
-            .read(true)
-            .write(true)
-            .open(directory.join(LOCK_FILE))?;
-        lock.try_lock_exclusive()
-            .context("another opencode-pty process already owns the service lock")?;
+        let lock = lock_runtime(&directory)?;
 
         let socket_path = socket_path(&directory)?;
         if socket_path.exists() {
@@ -52,7 +46,15 @@ impl Runtime {
         write_registration(&directory, &registration)?;
         let sweeper = {
             let directory = directory.clone();
-            thread::spawn(move || super::sweep::stale_runtimes(&directory))
+            let socket = socket.path.clone();
+            thread::spawn(move || {
+                super::sweep::stale_runtimes(&directory);
+                stale_sockets(
+                    &socket,
+                    nix::unistd::Uid::effective().as_raw(),
+                    SystemTime::now(),
+                );
+            })
         };
         Ok((
             Self {
@@ -76,6 +78,120 @@ impl Runtime {
         drop(self.lock);
         result
     }
+}
+
+/// Locks the runtime directory. A sweep or stopping daemon unlinks the lock file
+/// while holding it, so a lock taken on an unlinked file proves nothing; retry on
+/// the file now at the path.
+fn lock_runtime(directory: &Path) -> Result<File> {
+    let path = directory.join(LOCK_FILE);
+    for _ in 0..3 {
+        fs::create_dir_all(directory)?;
+        fs::set_permissions(directory, fs::Permissions::from_mode(0o700))?;
+        let lock = match OpenOptions::new()
+            .create(true)
+            .truncate(false)
+            .read(true)
+            .write(true)
+            .open(&path)
+        {
+            Ok(lock) => lock,
+            Err(error) if error.kind() == ErrorKind::NotFound => continue,
+            Err(error) => return Err(error.into()),
+        };
+        lock.try_lock_exclusive()
+            .context("another opencode-pty process already owns the service lock")?;
+        if is_current_lock(&lock, &path) {
+            return Ok(lock);
+        }
+    }
+    bail!(
+        "opencode-pty runtime directory {} kept changing while locking",
+        directory.display()
+    )
+}
+
+pub(super) fn is_current_lock(lock: &File, path: &Path) -> bool {
+    match (lock.metadata(), fs::symlink_metadata(path)) {
+        (Ok(held), Ok(linked)) => held.dev() == linked.dev() && held.ino() == linked.ino(),
+        _ => false,
+    }
+}
+
+/// Removes old sockets in this daemon's socket root that refuse connections.
+/// Their runtime directory may be gone or under another runtime root, where the
+/// sibling sweep cannot find them.
+fn stale_sockets(own: &Path, uid: u32, now: SystemTime) {
+    let Some(entries) = own.parent().and_then(|root| fs::read_dir(root).ok()) else {
+        return;
+    };
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path == own || path.extension() != Some("sock".as_ref()) {
+            continue;
+        }
+        if let Err(error) = stale_socket(&path, uid, now) {
+            eprintln!(
+                "opencode-pty could not remove stale socket {}: {error:#}",
+                path.display()
+            );
+        }
+    }
+}
+
+fn stale_socket(path: &Path, uid: u32, now: SystemTime) -> Result<()> {
+    // Symlinks and other users' files are never removed. The age guard covers a
+    // daemon between bind(2) and listen(2), which also refuses connections.
+    let before = fs::symlink_metadata(path)?;
+    let age = now.duration_since(before.modified()?).unwrap_or_default();
+    if !before.file_type().is_socket()
+        || before.uid() != uid
+        || age < STALE_RUNTIME_AGE
+        || !refuses_connections(path)
+    {
+        return Ok(());
+    }
+    // A daemon reusing this path replaces the socket first; keep its new one.
+    if fs::symlink_metadata(path)
+        .is_ok_and(|after| after.dev() == before.dev() && after.ino() == before.ino())
+    {
+        fs::remove_file(path)?;
+    }
+    Ok(())
+}
+
+fn refuses_connections(path: &Path) -> bool {
+    let bytes = path.as_os_str().as_bytes();
+    // SAFETY: sockaddr_un is plain data; all zeroes is a valid empty address.
+    let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+    if bytes.len() >= address.sun_path.len() {
+        return false;
+    }
+    address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+    for (slot, byte) in address.sun_path.iter_mut().zip(bytes) {
+        *slot = *byte as libc::c_char;
+    }
+    // SAFETY: socket returns a new descriptor, adopted immediately.
+    let fd = unsafe { libc::socket(libc::AF_UNIX, libc::SOCK_STREAM, 0) };
+    if fd < 0 {
+        return false;
+    }
+    // SAFETY: fd is a valid descriptor owned by nothing else.
+    let socket = unsafe { OwnedFd::from_raw_fd(fd) };
+    // Non-blocking, so a live daemon with a full backlog cannot stall the sweep.
+    // SAFETY: socket is a live descriptor.
+    if unsafe { libc::fcntl(socket.as_raw_fd(), libc::F_SETFL, libc::O_NONBLOCK) } != 0 {
+        return false;
+    }
+    // SAFETY: address is a valid sockaddr_un of the given length.
+    let result = unsafe {
+        libc::connect(
+            socket.as_raw_fd(),
+            (&raw const address).cast(),
+            size_of::<libc::sockaddr_un>() as libc::socklen_t,
+        )
+    };
+    result != 0 && std::io::Error::last_os_error().raw_os_error() == Some(libc::ECONNREFUSED)
 }
 
 /// Removes only state that still belongs to this daemon instance.
@@ -325,6 +441,97 @@ mod tests {
         assert_eq!(first_socket.parent(), second_socket.parent());
 
         fs::remove_dir_all(base).unwrap();
+    }
+
+    #[test]
+    fn lock_is_current_only_while_linked_at_its_path() {
+        let directory =
+            std::env::temp_dir().join(format!("opencode-pty-lock-test-{}", random_id()));
+        let lock = lock_runtime(&directory).unwrap();
+        let path = directory.join(LOCK_FILE);
+        assert!(is_current_lock(&lock, &path));
+        assert!(lock_runtime(&directory).is_err());
+
+        fs::remove_file(&path).unwrap();
+        assert!(!is_current_lock(&lock, &path));
+        fs::write(&path, b"").unwrap();
+        assert!(!is_current_lock(&lock, &path));
+        // The replacement lock file is free, so a new daemon can claim it.
+        let successor = lock_runtime(&directory).unwrap();
+        assert!(is_current_lock(&successor, &path));
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    struct SocketRoot(PathBuf);
+
+    impl SocketRoot {
+        fn new() -> Self {
+            // macOS temp directories are too long for sun_path.
+            let root = PathBuf::from(format!("/tmp/opencode-pty-test-{}", &random_id()[..16]));
+            fs::create_dir(&root).unwrap();
+            Self(root)
+        }
+
+        fn dead(&self, name: &str) -> PathBuf {
+            let path = self.0.join(name);
+            drop(UnixListener::bind(&path).unwrap());
+            path
+        }
+    }
+
+    impl Drop for SocketRoot {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn later() -> SystemTime {
+        SystemTime::now() + STALE_RUNTIME_AGE + std::time::Duration::from_secs(1)
+    }
+
+    fn uid() -> u32 {
+        nix::unistd::Uid::effective().as_raw()
+    }
+
+    #[test]
+    fn socket_sweep_removes_only_old_dead_sockets() {
+        let root = SocketRoot::new();
+        let own = root.dead("own.sock");
+        let dead = root.dead("dead.sock");
+        let live = root.0.join("live.sock");
+        let listener = UnixListener::bind(&live).unwrap();
+        let other = root.dead("other.socket");
+        let file = root.0.join("file.sock");
+        fs::write(&file, b"").unwrap();
+
+        stale_sockets(&own, uid(), later());
+
+        assert!(own.exists());
+        assert!(!dead.exists());
+        assert!(live.exists());
+        assert!(other.exists());
+        assert!(file.exists());
+        drop(listener);
+    }
+
+    #[test]
+    fn socket_sweep_keeps_young_foreign_and_symlinked_sockets() {
+        let root = SocketRoot::new();
+        let own = root.0.join("own.sock");
+        let young = root.dead("young.sock");
+        let target = root.dead("target");
+        let link = root.0.join("link.sock");
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+
+        stale_sockets(&own, uid(), SystemTime::now());
+        assert!(young.exists());
+        stale_sockets(&own, uid() + 1, later());
+        assert!(young.exists());
+        stale_sockets(&own, uid(), later());
+
+        assert!(!young.exists());
+        assert!(fs::symlink_metadata(&link).is_ok());
+        assert!(target.exists());
     }
 
     #[test]

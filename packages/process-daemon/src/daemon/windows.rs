@@ -184,6 +184,11 @@ pub(super) fn process_exists(pid: u32) -> bool {
     unsafe { WaitForSingleObject(handle.as_raw_handle(), 0) != WAIT_OBJECT_0 }
 }
 
+/// Held lock handles deny delete sharing, so the sweep's lock is on the linked file.
+pub(super) fn is_current_lock(_lock: &File, _path: &Path) -> bool {
+    true
+}
+
 /// Named pipes vanish with their server process; there is no endpoint to remove.
 pub(super) fn remove_stale_endpoint(
     _canonical_directory: &Path,

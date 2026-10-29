@@ -46,8 +46,14 @@ path component of letters, digits, `.`, `_`, or `-`. The registration
 default to a temporary directory when no home directory exists, because macOS deletes unaccessed regular files
 there after three days. The socket defaults to `/tmp/opencode-pty-<uid>/` to fit
 socket path limits; temporary cleaners skip sockets. A stopping daemon removes
-its own files and runtime directory, and a starting daemon removes abandoned
-sibling runtime directories older than ten minutes.
+its own files and runtime directory. A starting daemon removes abandoned sibling
+runtime directories whose lock is free once they are older than ten minutes,
+and on Unix at once when the registered process is dead. A Unix daemon only
+counts a lock taken on the lock file still linked at its path, so a sweep or
+stopping daemon that unlinks the file cannot leave two owners. It then removes
+sockets older than ten minutes in its socket directory that it owns and that
+refuse connections, which covers sockets whose runtime directory is gone or
+under another runtime root. Symlinks are never followed or removed.
 
 On Unix, set `OPENCODE_PTY_SOCKET_DIR` to use a different socket directory. The
 value must be an absolute path without `..` components. Sockets go in an
