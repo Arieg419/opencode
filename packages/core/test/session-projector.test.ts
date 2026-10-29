@@ -780,16 +780,19 @@ describe("SessionProjector", () => {
       expect(JSON.parse(replayed?.data ?? "{}")).toMatchObject({ native: { step: "replayed" } })
       expect(JSON.parse(replayed?.data ?? "{}")).not.toHaveProperty("providerState")
 
-      // Projecting onto the legacy row split its parts into session_part in the current shape.
-      const rewritten = JSON.parse(
-        (yield* db.get<{ data: string }>(sql`SELECT data FROM session_message WHERE id = ${assistantID}`))?.data ??
-          "{}",
-      )
+      // An envelope update rewrites the legacy row in the current shape but leaves its inline parts where they are.
+      const messageData = () =>
+        db
+          .get<{ data: string }>(sql`SELECT data FROM session_message WHERE id = ${assistantID}`)
+          .pipe(Effect.map((row) => JSON.parse(row?.data ?? "{}")))
+      const rewritten = yield* messageData()
       expect(rewritten).not.toHaveProperty("providerState")
-      expect(rewritten).toMatchObject({
-        native: { step: "replayed" },
-        content: [],
-      })
+      expect(rewritten).toMatchObject({ native: { step: "replayed" } })
+      expect(rewritten.content).toHaveLength(3)
+
+      // The first part write splits the legacy parts into session_part in the current shape.
+      yield* bus.publish(SessionEvent.Text.Started, { sessionID, assistantMessageID: assistantID, ordinal: 3 })
+      expect(yield* messageData()).toMatchObject({ native: { step: "replayed" }, content: [] })
       const partRows = yield* db
         .select({ data: SessionPartTable.data })
         .from(SessionPartTable)
@@ -797,7 +800,7 @@ describe("SessionProjector", () => {
         .orderBy(asc(SessionPartTable.ordinal))
         .all()
         .pipe(Effect.orDie)
-      const rewrittenParts = partRows.map((row) => row.data)
+      const rewrittenParts = partRows.map((row) => row.data).slice(0, 3)
       expect(rewrittenParts).toMatchObject([
         { type: "text", native: { signature: "text" } },
         { type: "reasoning", native: { signature: "reasoning" } },
@@ -1029,6 +1032,38 @@ describe("SessionProjector", () => {
         error: { type: "provider.invalid-request", message: "Failed" },
       })
       expect(yield* updated()).toEqual({ time_updated: 15 })
+    }),
+  )
+
+  it.effect("leaves a settled inline assistant message untouched when a new step starts", () =>
+    Effect.gen(function* () {
+      const db = yield* seedSession()
+      const bus = yield* Bus.Service
+      const settledID = SessionMessage.ID.make("msg_settled_inline")
+      const seeded = assistantRow(settledID, 0, { created, completed: created })
+      yield* db
+        .insert(SessionMessageTable)
+        .values({ ...seeded, data: { ...seeded.data, content: [{ type: "text", text: "old answer" }] } })
+        .run()
+        .pipe(Effect.orDie)
+      yield* Bus.reserveSequence(db, sessionID, 0)
+      const settledRow = () =>
+        db.select().from(SessionMessageTable).where(eq(SessionMessageTable.id, settledID)).get().pipe(Effect.orDie)
+      const before = yield* settledRow()
+
+      yield* bus.publish(SessionEvent.Step.Started, {
+        sessionID,
+        assistantMessageID: SessionMessage.ID.make("msg_next_step"),
+        agent: build,
+        model,
+        started: 1,
+      })
+      yield* bus.publish(SessionEvent.Execution.Succeeded, { sessionID })
+
+      expect(yield* settledRow()).toEqual(before)
+      expect(
+        yield* db.select().from(SessionPartTable).where(eq(SessionPartTable.message_id, settledID)).all().pipe(Effect.orDie),
+      ).toEqual([])
     }),
   )
 

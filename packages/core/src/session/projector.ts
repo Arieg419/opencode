@@ -219,10 +219,8 @@ const projectFork = Effect.fn("SessionProjector.projectFork")(function* (
           seq: row.seq,
           time_created: row.time_created,
           time_updated: row.time_updated,
-          data:
-            row.type === "assistant" && SessionHistory.hasInlineContent(row.data)
-              ? { ...row.data, content: [] }
-              : row.data,
+          // Unsplit parents copy their inline content as is, so old rows are never decoded here.
+          data: row.data,
         }
         // A summary references the first message it kept, which the fork copied under a new ID.
         const keepID = row.type === "compaction" ? row.data.metadata?.keepID : undefined
@@ -270,7 +268,6 @@ const projectFork = Effect.fn("SessionProjector.projectFork")(function* (
         .orderBy(asc(SessionPartTable.message_id), asc(SessionPartTable.ordinal))
         .all()
         .pipe(Effect.orDie)
-      const splitParentIDs = new Set(storedParts.map((part) => part.message_id))
       const partValues: Array<typeof SessionPartTable.$inferInsert> = storedParts.map((part) => ({
         message_id: idMap.get(part.message_id)!,
         session_id: event.data.sessionID,
@@ -281,23 +278,6 @@ const projectFork = Effect.fn("SessionProjector.projectFork")(function* (
         time_updated: part.time_updated,
         data: part.data,
       }))
-      for (const row of assistantRows) {
-        if (splitParentIDs.has(row.id) || !SessionHistory.hasInlineContent(row.data)) continue
-        const decoded = SessionHistory.decodeMessageRowSync(row)
-        if (decoded.type !== "assistant") continue
-        decoded.content.forEach((part, ordinal) => {
-          partValues.push({
-            message_id: idMap.get(row.id)!,
-            session_id: event.data.sessionID,
-            ordinal,
-            type: part.type,
-            call_id: part.type === "tool" ? part.id : null,
-            time_created: row.time_created,
-            time_updated: row.time_updated,
-            data: SessionHistory.encodePart(part),
-          })
-        })
-      }
       for (let index = 0; index < partValues.length; index += ForkBatchSize) {
         yield* db
           .insert(SessionPartTable)
@@ -305,7 +285,7 @@ const projectFork = Effect.fn("SessionProjector.projectFork")(function* (
           .run()
           .pipe(Effect.orDie)
       }
-      // The copied envelopes carry no content, so the parts' refs are recorded for each forked message here.
+      // Split parents' envelopes carry no content, so the parts' refs are recorded for each forked message here.
       const partsByMessage = Map.groupBy(partValues, (part) => part.message_id)
       yield* Effect.forEach(
         assistantRows,
@@ -327,40 +307,12 @@ const projectFork = Effect.fn("SessionProjector.projectFork")(function* (
 
 function run(db: DatabaseService, event: MessageEvent) {
   return Effect.gen(function* () {
-    const splitLegacyAssistantRow = Effect.fnUntraced(function* (row: typeof SessionMessageTable.$inferSelect) {
-      const message = SessionHistory.decodeMessageRowSync(row)
-      if (message.type !== "assistant") return undefined
-      if (!SessionHistory.hasInlineContent(row.data)) return message
-      const partRows = message.content.map((part, ordinal) => ({
-        message_id: message.id,
-        session_id: row.session_id,
-        ordinal,
-        type: part.type,
-        call_id: part.type === "tool" ? part.id : null,
-        time_created: row.time_created,
-        time_updated: event.created,
-        data: SessionHistory.encodePart(part),
-      }))
-      yield* db.delete(SessionPartTable).where(eq(SessionPartTable.message_id, message.id)).run().pipe(Effect.orDie)
-      for (let index = 0; index < partRows.length; index += ForkBatchSize) {
-        yield* db
-          .insert(SessionPartTable)
-          .values(partRows.slice(index, index + ForkBatchSize))
-          .run()
-          .pipe(Effect.orDie)
-      }
-      const envelope: SessionMessage.Assistant = { ...message, content: [] }
-      const { id: _, type: __, ...data } = encodeMessage(envelope)
-      yield* db
-        .update(SessionMessageTable)
-        .set({ data })
-        .where(and(eq(SessionMessageTable.id, message.id), eq(SessionMessageTable.session_id, row.session_id)))
-        .run()
-        .pipe(Effect.orDie)
-      return envelope
-    })
-    /** Splits a legacy inline row first, then returns the owner the message's part refs belong to. */
-    const ensureAssistantPartsSplit = Effect.fnUntraced(function* (messageID: SessionMessage.ID) {
+    /**
+     * The only place a legacy inline assistant row moves to session_part, called right before its parts are written.
+     * `carry: false` drops the inline parts instead of copying them, for a write that replaces them all. Returns the
+     * owner the message's part refs belong to.
+     */
+    const prepareAssistantParts = Effect.fnUntraced(function* (messageID: SessionMessage.ID, carry: boolean) {
       const row = yield* db
         .select({
           id: SessionMessageTable.id,
@@ -378,30 +330,63 @@ function run(db: DatabaseService, event: MessageEvent) {
         .get()
         .pipe(Effect.orDie)
       if (!row) return
-      if (row.inlineCount > 0) {
-        const full = yield* db
-          .select()
-          .from(SessionMessageTable)
-          .where(eq(SessionMessageTable.id, messageID))
-          .get()
+      const full =
+        row.inlineCount > 0
+          ? yield* db
+              .select()
+              .from(SessionMessageTable)
+              .where(eq(SessionMessageTable.id, messageID))
+              .get()
+              .pipe(Effect.orDie)
+          : undefined
+      const message = full ? SessionHistory.decodeMessageRowSync(full) : undefined
+      if (full && message?.type === "assistant") {
+        if (carry) {
+          const partRows = message.content.map((part, ordinal) => ({
+            message_id: messageID,
+            session_id: event.data.sessionID,
+            ordinal,
+            type: part.type,
+            call_id: part.type === "tool" ? part.id : null,
+            time_created: full.time_created,
+            time_updated: event.created,
+            data: SessionHistory.encodePart(part),
+          }))
+          yield* db.delete(SessionPartTable).where(eq(SessionPartTable.message_id, messageID)).run().pipe(Effect.orDie)
+          for (let index = 0; index < partRows.length; index += ForkBatchSize) {
+            yield* db
+              .insert(SessionPartTable)
+              .values(partRows.slice(index, index + ForkBatchSize))
+              .run()
+              .pipe(Effect.orDie)
+          }
+        }
+        const { id: _, type: __, ...data } = encodeMessage({ ...message, content: [] })
+        yield* db
+          .update(SessionMessageTable)
+          .set({ data })
+          .where(and(eq(SessionMessageTable.id, messageID), eq(SessionMessageTable.session_id, event.data.sessionID)))
+          .run()
           .pipe(Effect.orDie)
-        if (full) yield* splitLegacyAssistantRow(full)
       }
       return { sessionID: event.data.sessionID, messageID, seq: row.seq } satisfies SessionBlob.Owner
     })
-    // Assistant content lives in session_part rows; the part methods below write it and record its blob refs.
+    // Assistant content is written only by the part methods below, which also record its blob refs. Envelope updates
+    // keep whatever content the row already holds: inline for a legacy row that was never split, [] once it was.
     const updateMessage = (message: SessionMessage.Info) => {
-      const encoded = encodeMessage(
-        message.type === "assistant" && message.content.length > 0 ? { ...message, content: [] } : message,
+      const { id: _, type: __, ...data } = encodeMessage(
+        message.type === "assistant" ? { ...message, content: [] } : message,
       )
-      const { id: _, type: __, ...data } = encoded
       return db
         .update(SessionMessageTable)
         .set({
           ...(event.type === SessionEvent.Step.Started.type
             ? { time_created: DateTime.toEpochMillis(message.time.created) }
             : {}),
-          data,
+          data:
+            message.type === "assistant"
+              ? sql`json_set(${JSON.stringify(data)}, '$.content', json(coalesce(${SessionMessageTable.data} -> '$.content', '[]')))`
+              : data,
         })
         .where(and(eq(SessionMessageTable.id, message.id), eq(SessionMessageTable.session_id, event.data.sessionID)))
         .run()
@@ -472,8 +457,8 @@ function run(db: DatabaseService, event: MessageEvent) {
             .get()
             .pipe(Effect.orDie)
           if (!row) return
-          const message = yield* splitLegacyAssistantRow(row)
-          return message && !message.time.completed ? message : undefined
+          const message = SessionHistory.decodeMessageRowSync(row)
+          return message.type === "assistant" && !message.time.completed ? message : undefined
         })
       },
       getAssistant(messageID) {
@@ -491,12 +476,13 @@ function run(db: DatabaseService, event: MessageEvent) {
             .get()
             .pipe(Effect.orDie)
           if (!row) return
-          return yield* splitLegacyAssistantRow(row)
+          const message = SessionHistory.decodeMessageRowSync(row)
+          return message.type === "assistant" ? message : undefined
         })
       },
       appendAssistantPart(messageID, part) {
         return Effect.gen(function* () {
-          const owner = yield* ensureAssistantPartsSplit(messageID)
+          const owner = yield* prepareAssistantParts(messageID, true)
           if (!owner) return
           const data = SessionHistory.encodePart(yield* SessionBlob.externalizePart(db, part))
           const next = yield* db
@@ -524,7 +510,7 @@ function run(db: DatabaseService, event: MessageEvent) {
       },
       updateAssistantPart(messageID, match, recipe) {
         return Effect.gen(function* () {
-          const owner = yield* ensureAssistantPartsSplit(messageID)
+          const owner = yield* prepareAssistantParts(messageID, true)
           if (!owner) return
           const row = yield* db
             .select()
@@ -566,31 +552,8 @@ function run(db: DatabaseService, event: MessageEvent) {
       },
       replaceAssistantParts(messageID, parts) {
         return Effect.gen(function* () {
-          const messageRow = yield* db
-            .select()
-            .from(SessionMessageTable)
-            .where(
-              and(
-                eq(SessionMessageTable.id, messageID),
-                eq(SessionMessageTable.session_id, event.data.sessionID),
-                eq(SessionMessageTable.type, "assistant"),
-              ),
-            )
-            .get()
-            .pipe(Effect.orDie)
-          if (!messageRow) return
-          if (SessionHistory.hasInlineContent(messageRow.data)) {
-            const message = SessionHistory.decodeMessageRowSync(messageRow)
-            if (message.type === "assistant") {
-              const { id: _, type: __, ...data } = encodeMessage({ ...message, content: [] })
-              yield* db
-                .update(SessionMessageTable)
-                .set({ data })
-                .where(eq(SessionMessageTable.id, messageID))
-                .run()
-                .pipe(Effect.orDie)
-            }
-          }
+          const owner = yield* prepareAssistantParts(messageID, false)
+          if (!owner) return
           yield* db.delete(SessionPartTable).where(eq(SessionPartTable.message_id, messageID)).run().pipe(Effect.orDie)
           const stored = yield* Effect.forEach(parts, (part) => SessionBlob.externalizePart(db, part))
           const partRows = stored.map((part, ordinal) => ({
@@ -611,11 +574,7 @@ function run(db: DatabaseService, event: MessageEvent) {
               .pipe(Effect.orDie)
           }
           // A content rewrite may drop media, so refs the new parts no longer name are released.
-          yield* SessionBlob.syncRefs(
-            db,
-            { sessionID: event.data.sessionID, messageID, seq: messageRow.seq },
-            { content: partRows.map((part) => part.data) },
-          )
+          yield* SessionBlob.syncRefs(db, owner, { content: partRows.map((part) => part.data) })
         })
       },
       getShell(shellID) {
