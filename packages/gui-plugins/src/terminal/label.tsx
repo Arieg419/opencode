@@ -11,7 +11,8 @@ import { usePlugin } from "@opencode/plugin/gui"
 export function TerminalTabLabel(props: {
   label: string
   title: string
-  rename?: (title: string) => void
+  /** Receives the edited title, or `null` for an emptied field; unchanged titles are the receiver's to skip. */
+  rename?: (title: string | null) => void
   close: () => void
 }): JSX.Element {
   const plugin = usePlugin()
@@ -35,9 +36,7 @@ export function TerminalTabLabel(props: {
 
   const save = () => {
     if (!store.editing) return
-    const value = store.title.trim()
-
-    if (value && value !== props.title) props.rename?.(value)
+    props.rename?.(store.title.trim() || null)
     setStore("editing", false)
   }
 

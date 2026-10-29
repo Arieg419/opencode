@@ -202,7 +202,12 @@ const setup: Plugin.Setup<typeof Terminal> = (ctx) => {
       },
       group: "terminal",
       label: () => (
-        <TerminalTabLabel label={label()} title={info()?.title ?? ""} close={() => void terminal().close(id)} />
+        <TerminalTabLabel
+          label={label()}
+          title={info()?.title ?? ""}
+          rename={(title) => void terminal().rename(id, title)}
+          close={() => void terminal().close(id)}
+        />
       ),
     }
   }

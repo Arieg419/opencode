@@ -237,7 +237,15 @@ export default function TerminalPanel(props: {
                   if (focused instanceof HTMLInputElement && event.currentTarget.contains(focused)) focused.blur()
                 }}
               >
-                <For each={terminal().all()}>{(info) => <TerminalTab terminal={info} session={terminal()} />}</For>
+                <For each={terminal().all()}>
+                  {(info) => (
+                    <TerminalTab
+                      terminal={info}
+                      session={terminal()}
+                      rename={(title) => void terminal().rename(info.id, title)}
+                    />
+                  )}
+                </For>
                 <div class="h-full flex items-center justify-center">
                   <Tooltip
                     value={

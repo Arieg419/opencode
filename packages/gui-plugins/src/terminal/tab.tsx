@@ -13,7 +13,8 @@ import { focusTerminalById } from "./focus"
 export function TerminalTab(props: {
   terminal: PersistentPtyInfo
   session: TerminalSession
-  rename?: (title: string) => void
+  /** Receives the edited title, or `null` for an emptied field; unchanged titles are the receiver's to skip. */
+  rename?: (title: string | null) => void
 }): JSX.Element {
   const plugin = usePlugin()
 
@@ -74,10 +75,7 @@ export function TerminalTab(props: {
   const save = () => {
     if (!store.blurEnabled) return
 
-    const value = store.title.trim()
-
-    if (value && value !== props.terminal.title) props.rename?.(value)
-
+    props.rename?.(store.title.trim() || null)
     setStore("editing", false)
   }
 

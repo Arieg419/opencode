@@ -24,21 +24,22 @@ const info = (id: string, title: string, sessionID = "ses_1"): PersistentPtyInfo
 // A server with persistent terminals: its own terminal list per session, and an event stream the test drives.
 function fakeServer(options: { capabilities?: { persistentPty?: boolean } } = {}) {
   const terminals = new Map<string, PersistentPtyInfo[]>()
-  const handlers = new Map<string, ((event: { data: { sessionID: string } }) => void)[]>()
-  const listeners: ((event: { name: string }) => void)[] = []
-  const calls = { list: 0, create: [] as unknown[], remove: [] as string[] }
+  const handlers = new Map<string, ((event: { data: EventData }) => void)[]>()
+  const calls = { list: 0, create: [] as unknown[], remove: [] as string[], update: [] as unknown[] }
   const state = {
     capabilities: options.capabilities,
     directory: "/repo",
     created: 0,
     createError: undefined as unknown,
+    updateError: undefined as unknown,
+    update: undefined as Promise<void> | undefined,
     list: undefined as Promise<void> | undefined,
   }
 
   const server = {
     id: "http://server",
     data: {
-      on: (type: string, handler: (event: { data: { sessionID: string } }) => void) => {
+      on: (type: string, handler: (event: { data: EventData }) => void) => {
         handlers.set(type, [...(handlers.get(type) ?? []), handler])
 
         return () =>
@@ -46,11 +47,6 @@ function fakeServer(options: { capabilities?: { persistentPty?: boolean } } = {}
             type,
             (handlers.get(type) ?? []).filter((item) => item !== handler),
           )
-      },
-      listen: (handler: (event: { name: string }) => void) => {
-        listeners.push(handler)
-
-        return () => listeners.splice(listeners.indexOf(handler), 1)
       },
       session: { get: (id: string) => ({ id, location: { directory: state.directory } }) },
     },
@@ -84,23 +80,39 @@ function fakeServer(options: { capabilities?: { persistentPty?: boolean } } = {}
               ),
             )
           },
+          update: async (input: { ptyID: string; title?: string | null }) => {
+            calls.update.push(input)
+            await state.update
+
+            if (state.updateError) throw state.updateError
+
+            const updated = [...terminals.values()].flat().find((item) => item.id === input.ptyID)!
+            const next = { ...updated, title: input.title ?? "zsh", userTitle: input.title ?? null }
+            terminals.set(
+              next.sessionID,
+              terminals.get(next.sessionID)!.map((item) => (item.id === next.id ? next : item)),
+            )
+
+            return next
+          },
         },
       },
     },
   }
 
   return {
-    // SAFETY: the model reads only `id`, `data` (on, listen, session.get) and the client calls stubbed here.
+    // SAFETY: the model reads only `id`, `data` (on, session.get) and the client calls stubbed here.
     ref: server as unknown as ServerRef,
     terminals,
     calls,
     state,
-    emit(type: string, sessionID = "ses_1") {
-      handlers.get(type)?.forEach((handler) => handler({ data: { sessionID } }))
-      listeners.forEach((listener) => listener({ name: type }))
+    emit(type: string, sessionID = "ses_1", terminal?: PersistentPtyInfo) {
+      handlers.get(type)?.forEach((handler) => handler({ data: { sessionID, terminal } }))
     },
   }
 }
+
+type EventData = { sessionID: string; terminal?: PersistentPtyInfo }
 
 function setup(server: ReturnType<typeof fakeServer>) {
   const stored = new Map<string, string[]>()
@@ -195,14 +207,8 @@ describe("terminal model", () => {
     expect(terminal.get("pty_1")).toBeUndefined()
     expect(terminal.all().map((item) => item.id)).toEqual(["pty_2"])
 
-    server.terminals.set("ses_1", [info("pty_2", "build")])
-    server.emit("persistent-pty.updated")
-    await flush()
-
-    expect(terminal.get("pty_2")?.title).toBe("build")
-
     // Terminals that changed while the event stream was down show up after it reconnects.
-    server.terminals.set("ses_1", [info("pty_2", "build"), info("pty_3", "Terminal 3")])
+    server.terminals.set("ses_1", [info("pty_2", "Terminal 2"), info("pty_3", "Terminal 3")])
     server.emit("server.connected")
     await flush()
 
@@ -297,6 +303,107 @@ describe("terminal model", () => {
     expect(server.calls.remove).toEqual(["pty_1"])
     expect(terminal.all().map((item) => item.id)).toEqual(["pty_2"])
     expect(terminal.active()).toBe("pty_2")
+  })
+
+  test("labels follow another client's rename from the updated event", async () => {
+    const server = fakeServer()
+    server.terminals.set("ses_1", [info("pty_1", "Terminal 1"), info("pty_2", "Terminal 2")])
+    const { model, session } = setup(server)
+    const terminal = model.load(session)
+    await flush()
+    const calls = server.calls.list
+
+    server.emit("persistent-pty.updated", "ses_1", { ...info("pty_2", "build"), userTitle: "build" })
+    await flush()
+
+    // The event carries the terminal, so the label changes without listing again.
+    expect(terminal.get("pty_2")).toMatchObject({ title: "build", userTitle: "build" })
+    expect(terminal.get("pty_1")?.title).toBe("Terminal 1")
+    expect(server.calls.list).toBe(calls)
+
+    // A terminal the list hasn't seen yet arrives with a refresh.
+    server.terminals.set("ses_1", [...server.terminals.get("ses_1")!, info("pty_3", "Terminal 3")])
+    server.emit("persistent-pty.updated", "ses_1", info("pty_3", "Terminal 3"))
+    await flush()
+
+    expect(terminal.all().map((item) => item.id)).toEqual(["pty_1", "pty_2", "pty_3"])
+  })
+
+  test("renames a terminal on the server and shows the new title right away", async () => {
+    const server = fakeServer()
+    const update = Promise.withResolvers<void>()
+    server.state.update = update.promise
+    server.terminals.set("ses_1", [info("pty_1", "Terminal 1")])
+    const { model, session } = setup(server)
+    const terminal = model.load(session)
+    await flush()
+
+    const renamed = terminal.rename("pty_1", "build")
+
+    expect(terminal.get("pty_1")?.title).toBe("build")
+
+    update.resolve()
+    await renamed
+
+    expect(server.calls.update).toEqual([{ ptyID: "pty_1", title: "build" }])
+    expect(terminal.get("pty_1")).toMatchObject({ title: "build", userTitle: "build" })
+  })
+
+  test("sends nothing for the current title or for clearing a terminal never renamed", async () => {
+    const server = fakeServer()
+    server.terminals.set("ses_1", [info("pty_1", "Terminal 1")])
+    const { model, session } = setup(server)
+    const terminal = model.load(session)
+    await flush()
+
+    await terminal.rename("pty_1", "Terminal 1")
+    await terminal.rename("pty_1", null)
+
+    expect(server.calls.update).toEqual([])
+  })
+
+  test("clears a user title with null so the server's fallback title shows", async () => {
+    const server = fakeServer()
+    server.terminals.set("ses_1", [{ ...info("pty_1", "build"), userTitle: "build" }])
+    const { model, session } = setup(server)
+    const terminal = model.load(session)
+    await flush()
+
+    await terminal.rename("pty_1", null)
+
+    expect(server.calls.update).toEqual([{ ptyID: "pty_1", title: null }])
+    expect(terminal.get("pty_1")).toMatchObject({ title: "zsh", userTitle: null })
+  })
+
+  test("tells the user renaming waits for the terminal service to restart and restores the title", async () => {
+    const server = fakeServer()
+    server.state.updateError = Object.assign(new Error("rename unsupported"), {
+      _tag: "PtyFeatureUnsupportedError",
+      feature: "rename",
+    })
+    server.terminals.set("ses_1", [info("pty_1", "Terminal 1")])
+    const { model, session, toasts } = setup(server)
+    const terminal = model.load(session)
+    await flush()
+
+    await terminal.rename("pty_1", "build")
+
+    expect(toasts).toEqual([{ variant: "error", title: "rename.unsupported" }])
+    expect(terminal.get("pty_1")).toMatchObject({ title: "Terminal 1", userTitle: null })
+  })
+
+  test("shows other rename failures as a generic error", async () => {
+    const server = fakeServer()
+    server.state.updateError = new Error("boom")
+    server.terminals.set("ses_1", [info("pty_1", "Terminal 1")])
+    const { model, session, toasts } = setup(server)
+    const terminal = model.load(session)
+    await flush()
+
+    await terminal.rename("pty_1", "build")
+
+    expect(toasts).toEqual([{ variant: "error", title: "rename.failed", description: "boom" }])
+    expect(terminal.get("pty_1")?.title).toBe("Terminal 1")
   })
 
   test("drops the terminals stored before they lived on the server", async () => {

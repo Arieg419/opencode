@@ -1,7 +1,7 @@
 import { createRoot, getOwner, runWithOwner } from "solid-js"
 import { createStore } from "solid-js/store"
 import { Predicate, Schema } from "effect"
-import { ClientError, type PersistentPtyInfo } from "@opencode/client"
+import { ClientError, isPtyFeatureUnsupportedError, type PersistentPtyInfo } from "@opencode/client"
 import {
   createKeyed,
   type Layout,
@@ -17,9 +17,6 @@ import { defaultTitle, titleNumber } from "./title"
 const LEGACY = { key: "terminals", from: "workspace:terminal" }
 
 const Selected = Schema.Struct({ id: Schema.optional(Schema.String) })
-
-// Renames publish this; servers and clients that predate it never see it, so it is matched by name.
-const UPDATED: string = "persistent-pty.updated"
 
 export type TerminalModel = ReturnType<typeof createTerminalModel>
 
@@ -86,6 +83,15 @@ export function createTerminalModel(input: {
     })
   }
 
+  // Replaces a listed terminal's info; a terminal the list doesn't have yet arrives with the next refresh.
+  const replace = (key: string, terminal: PersistentPtyInfo) =>
+    setLists((draft) => {
+      const list = draft.sessions[key]
+      const index = list?.findIndex((info) => info.id === terminal.id) ?? -1
+
+      if (list && index !== -1) draft.sessions[key] = list.with(index, terminal)
+    })
+
   const refreshQuietly = (session: SessionRef) =>
     void refresh(session).catch((error) => console.error("Failed to list terminals", error))
 
@@ -128,8 +134,13 @@ export function createTerminalModel(input: {
       data.on("server.connected", () => sync(server)),
       data.on("persistent-pty.added", (event) => refreshSession(event.data.sessionID)),
       data.on("persistent-pty.removed", (event) => refreshSession(event.data.sessionID)),
-      data.listen((event) => {
-        if (event.name === UPDATED && state.capabilities[server.id]) refreshServer(server)
+      data.on("persistent-pty.updated", (event) => {
+        const key = `${server.id}\n${event.data.sessionID}`
+
+        if (!lists.sessions[key]?.some((info) => info.id === event.data.terminal.id))
+          return refreshSession(event.data.sessionID)
+
+        replace(key, event.data.terminal)
       }),
     ])!
 
@@ -264,6 +275,36 @@ export function createTerminalModel(input: {
           .remove({ ptyID: id })
           .then(() => refresh(target))
           .catch((error) => console.error("Failed to close terminal", error))
+      },
+      /**
+       * Sets the terminal's title on the server; `null` clears it, so the shell's or the default title shows again.
+       * The current title, or clearing a terminal never renamed, sends nothing.
+       */
+      async rename(id: string, title: string | null) {
+        const target = session()
+        const previous = get(id)
+
+        if (!previous || title === previous.title || (title === null && previous.userTitle === null)) return
+
+        // Only a new title is known before the server answers; a cleared one shows whatever the server falls back to.
+        if (title !== null) replace(key, { ...previous, title, userTitle: title })
+
+        await target.server.client.experimental.persistentPty
+          .update({ ptyID: id, title })
+          .then((info) => replace(key, info))
+          .catch((error: unknown) => {
+            // A newer title from the server stays.
+            if (title !== null && get(id)?.userTitle === title) replace(key, previous)
+            input.toast.show(
+              isPtyFeatureUnsupportedError(error)
+                ? { variant: "error", title: input.t("rename.unsupported") }
+                : {
+                    variant: "error",
+                    title: input.t("rename.failed"),
+                    description: error instanceof Error ? error.message : String(error),
+                  },
+            )
+          })
       },
       requestFocus(id?: string) {
         requestFocus(key, id)

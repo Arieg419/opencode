@@ -9,6 +9,8 @@ export default {
   close: "Close terminal",
   "create.failed": "Couldn't create a terminal",
   "create.unsupported": "This server is too old for terminals. Update OpenCode on this server.",
+  "rename.failed": "Couldn't rename the terminal",
+  "rename.unsupported": "Terminal renaming will be available after OpenCode's terminal service restarts",
   disconnected: "Terminal disconnected",
   connectionFailed: "Terminal connection failed",
   serverOutdated: "This server is too old for terminals; update OpenCode on it",
