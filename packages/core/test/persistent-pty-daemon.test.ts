@@ -85,22 +85,30 @@ it.live("rediscovers a rotated registration when acquiring a subscription", () =
   }),
 )
 
-it.live("reports the features of the daemon it connected to", () =>
+it.live("refreshes the daemon's features when its registration rotates", () =>
   Effect.gen(function* () {
     const { root, directory } = yield* temporaryRuntime()
     const socketPath = path.join(directory, "daemon.sock")
+    let token = "old-token"
+    let instance = "old-instance"
     let features: string[] | undefined
-    yield* listen(socketPath, (_socket, request) => {
-      if (request.op === "ping") return features ? { ...pong, features } : pong
+    yield* listen(socketPath, (_socket, request, receivedToken) => {
+      if (receivedToken !== token) return { type: "error", message: "authentication failed" }
+      if (request.op === "ping") return { ...pong, instance_id: instance, ...(features ? { features } : {}) }
       return { type: "terminals", terminals: [] }
     })
-    yield* Effect.promise(() => writeRegistration(directory, socketPath))
-    const old = yield* makeDaemonTransport(root, "daemon")
-    expect(yield* old.supports("rename")).toBeFalse()
+    yield* Effect.promise(() => writeRegistration(directory, socketPath, instance, token))
+    const daemon = yield* makeDaemonTransport(root, "daemon")
+    expect(yield* daemon.supports("rename")).toBeFalse()
 
+    token = "new-token"
+    instance = "new-instance"
     features = ["rename"]
-    const current = yield* makeDaemonTransport(root, "daemon")
-    expect(yield* current.supports("rename")).toBeTrue()
+    yield* Effect.promise(() => writeRegistration(directory, socketPath, instance, token, features))
+    // The cached registration is replaced once a request is rejected, as rename's lookup does first.
+    yield* daemon.request({ op: "list" })
+
+    expect(yield* daemon.supports("rename")).toBeTrue()
   }),
 )
 

@@ -70,6 +70,7 @@ describe("PersistentPty session cleanup", () => {
         const second = yield* session.create({ location })
         const stuck = yield* pty.create(first.id, { args: [], cwd: directory.path, title: "stuck", env: {} })
         const terminal = yield* pty.create(second.id, { args: [], cwd: directory.path, title: "second", env: {} })
+        yield* pty.control(stuck.id, "att", 80, 24)
         daemon.failTerminate.add(stuck.id)
         const removed = yield* nextRemoved(bus)
 
@@ -78,6 +79,8 @@ describe("PersistentPty session cleanup", () => {
 
         expect((yield* Fiber.join(removed)).data).toEqual({ sessionID: second.id, ptyID: terminal.id })
         expect((yield* pty.list()).map((item) => item.id)).toEqual([stuck.id])
+        // The fake daemon rejects read_rows, so a stale selection would fail instead of returning null.
+        expect(yield* pty.read(first.id)).toBeNull()
       }).pipe(Effect.provide(layer(daemon)))
     }),
   )
