@@ -254,9 +254,27 @@ test("migrates every built-in V1 theme in its supported modes", () => {
   for (const source of Object.values(DEFAULT_THEMES)) {
     const migrated = migrateV1(source)
     for (const mode of themeModes(migrated)) {
-      expect(resolveThemeDocument(migrated, mode).text.base).toBeDefined()
+      const resolved = resolveThemeDocument(migrated, mode)
+      expect(resolved.text.base).toBeDefined()
+      expect(resolved.thinkingOpacity).toBe(0.6)
     }
   }
+})
+
+test("migrates custom V1 thinkingOpacity across default and new designs", () => {
+  const source = structuredClone(opencodeV1)
+  source.theme.thinkingOpacity = 0.25
+  for (const migrated of [migrateV1(source), migrateV1NewDesigns(source)]) {
+    for (const mode of ["light", "dark"] as const) {
+      const resolved = resolveThemeDocument(migrated, mode)
+      expect(resolved.thinkingOpacity).toBe(0.25)
+      expect(resolved.surface("dialog").thinkingOpacity).toBe(0.25)
+    }
+  }
+
+  const invalid = structuredClone(opencodeV1)
+  invalid.theme.thinkingOpacity = 1.5
+  expect(() => migrateV1(invalid)).toThrow("Invalid V1 thinkingOpacity")
 })
 
 test("collapses identical V1 backgrounds when both variants infer one mode", () => {
