@@ -102,7 +102,7 @@ fetched page cannot use the machine's identity.
   OpenCode reads the files for each request, so a rotated certificate applies without a restart.
 - `passphrase_file` is the path to a file holding the passphrase of an encrypted key, with any trailing newline ignored.
   Give the path itself, not a `{file:...}` reference, which would put the passphrase into the configuration.
-- The first entry whose `hosts` match is used.
+- The last entry whose `hosts` match is used, so list broad patterns first and specific hosts after them.
 
 This is a machine setting, so OpenCode reads it only from managed and global configuration: macOS managed preferences
 (`ai.opencode.managed`), the system directory (`/etc/opencode`, `/Library/Application Support/opencode`,

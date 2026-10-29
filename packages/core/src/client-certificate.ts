@@ -82,13 +82,13 @@ const load = Effect.fn("ClientCertificate.load")(function* (global: Global.Inter
   )
 })
 
-/** The first rule naming the URL's host; plain-HTTP URLs never match. */
+/** The last rule naming the URL's host, like permission rules; plain-HTTP URLs never match. */
 export function match(rules: readonly Rule[], url: string) {
   if (!URL.canParse(url)) return
   const target = new URL(url)
   if (target.protocol !== "https:" && target.protocol !== "wss:") return
   const host = hostname(target.hostname)
-  return rules.find((rule) => rule.hosts.some((pattern) => Wildcard.match(host, pattern)))
+  return rules.findLast((rule) => rule.hosts.some((pattern) => Wildcard.match(host, pattern)))
 }
 
 // `llm.example.` and `LLM.example` name the same host as `llm.example`, and `[0:0::1]` the same as `[::1]`.

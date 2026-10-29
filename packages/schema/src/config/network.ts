@@ -26,6 +26,6 @@ export class ClientCertificate extends Schema.Class<ClientCertificate>("Config.N
 export class Info extends Schema.Class<Info>("Config.Network")({
   client_certificates: ClientCertificate.pipe(Schema.Array, optional).annotate({
     description:
-      "Client certificates presented to matching hosts for mutual TLS. Read from system, managed, and global configuration only",
+      "Client certificates presented to matching hosts for mutual TLS. The last matching entry wins. Read from system, managed, and global configuration only",
   }),
 }) {}

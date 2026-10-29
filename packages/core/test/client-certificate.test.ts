@@ -189,6 +189,8 @@ describe("ClientCertificate", () => {
       expect(ClientCertificate.match(rules, "https://[::1]/")).toBe(rules[0])
       expect(ClientCertificate.match(rules, "http://api.corp.test/v1")).toBeUndefined()
       expect(ClientCertificate.match(rules, "https://user.test/v1")).toBeUndefined()
+      const specific = { ...rules[0], hosts: ["llm.corp.test"] }
+      expect(ClientCertificate.match([...rules, specific], "https://llm.corp.test/v1")).toBe(specific)
     }).pipe(Effect.provide(layer())),
   )
 
