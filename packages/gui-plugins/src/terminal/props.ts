@@ -10,5 +10,7 @@ export type TerminalProps = {
   autoFocus?: boolean
   onAutoFocus?: () => void
   onSubmit?: () => void
+  /** The connection failed or closed; the pane shows why and stays until it unmounts. */
+  onFailure?: () => void
   class?: string
 }

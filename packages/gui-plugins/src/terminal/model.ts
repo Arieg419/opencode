@@ -1,8 +1,16 @@
-import { createEffect, createRoot, getOwner, runWithOwner } from "solid-js"
+import { createRoot, getOwner, runWithOwner } from "solid-js"
 import { createStore } from "solid-js/store"
 import { Predicate, Schema } from "effect"
 import { ClientError, type PersistentPtyInfo } from "@opencode/client"
-import type { Layout, Persisted, ServerRef, SessionRef, Storage, Toasts } from "@opencode/plugin/gui"
+import {
+  createKeyed,
+  type Layout,
+  type Persisted,
+  type ServerRef,
+  type SessionRef,
+  type Storage,
+  type Toasts,
+} from "@opencode/plugin/gui"
 import { defaultTitle, titleNumber } from "./title"
 
 // The keys terminals were stored under before they lived on the server. Their PTY ids no longer exist anywhere.
@@ -335,12 +343,13 @@ function settled(session: SessionRef) {
 
   return new Promise<void>((resolve) =>
     createRoot((dispose) =>
-      createEffect(() => {
-        if (session.pending) return
-
-        dispose()
-        resolve()
-      }),
+      createKeyed(
+        () => !session.pending,
+        () => {
+          dispose()
+          resolve()
+        },
+      ),
     ),
   )
 }

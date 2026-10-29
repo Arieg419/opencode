@@ -182,6 +182,7 @@ export const Terminal = (props: TerminalProps) => {
       if (disposed) return
       setFailure(next)
       reveal()
+      props.onFailure?.()
 
       if (next === "outdated") socket?.close(1000)
     },
