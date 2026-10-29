@@ -1422,7 +1422,17 @@ function buildExecution(
         Layer.provide(Layer.succeed(Bus.Service, bus)),
         Layer.provide(Layer.succeed(SessionStore.Service, store)),
         Layer.provide(Layer.succeed(Job.Service, jobs)),
-        Layer.provide(SubagentQueue.layer),
+        // No cap here: reading it would boot each parent's full Location graph, which fetches the model catalog.
+        Layer.provide(
+          Layer.succeed(
+            SubagentQueue.Service,
+            SubagentQueue.Service.of({
+              limit: () => Effect.succeed(undefined),
+              hold: (_, effect) => effect,
+              waiting: () => Effect.succeed(undefined),
+            }),
+          ),
+        ),
         // Do not reuse the outer harness's selector with its already-captured Location map.
         Layer.provide(
           AppNodeBuilder.build(Instance.node, [LocationServiceMap.node.replace(locations)]).pipe(Layer.fresh),
