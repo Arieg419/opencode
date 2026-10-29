@@ -275,6 +275,8 @@ test("a rejected registration clears itself and retries with its tabs after the 
     expect(app.listeners.has(app.calls[1].input.binding)).toBe(false)
     expect(app.states.at(-1)).toMatchObject({ registration: undefined, embeds: {}, browser, suspended: false })
     app.ipc.reject = undefined
+    // Key and pointer presses wake the attachment; they must not cut the backoff short.
+    app.connection.wake()
     jest.advanceTimersByTime(999)
     expect(app.calls).toHaveLength(2)
     jest.advanceTimersByTime(1)

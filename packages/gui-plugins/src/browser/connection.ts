@@ -129,7 +129,10 @@ export function createConnection(input: {
     state.suspended = false
     state.error = undefined
     publish()
-    retry = setTimeout(register, Math.min(30_000, 1_000 * 2 ** attempts++))
+    retry = setTimeout(() => {
+      retry = undefined
+      register()
+    }, Math.min(30_000, 1_000 * 2 ** attempts++))
   }
 
   const register = () => {
@@ -144,6 +147,7 @@ export function createConnection(input: {
 
     lost = false
     clearTimeout(retry)
+    retry = undefined
 
     const registration: Registration = open(
       current,
@@ -220,7 +224,11 @@ export function createConnection(input: {
   }
 
   return {
-    wake: register,
+    // The window wakes on every key and pointer press. A rejected registration waits out its backoff instead, or each
+    // press would register again and flip the side panel between the stored tabs and none.
+    wake: () => {
+      if (retry === undefined) register()
+    },
     /** Follows the pane's Ipc going away and coming back. */
     refresh() {
       if (!input.client()) {
