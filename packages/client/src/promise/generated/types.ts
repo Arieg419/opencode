@@ -820,6 +820,7 @@ export type PersistentPtyInfo = {
   pid: number
   exitCode?: number
   sessionID: SessionID
+  userTitle: string | null
   foregroundProcess: string | null
   size: { cols: number; rows: number }
   output: { head: number; tail: number }
@@ -2124,6 +2125,15 @@ export type PersistentPtyAdded = {
   data: { sessionID: SessionID; terminal: PersistentPtyInfo }
 }
 
+export type PersistentPtyUpdated = {
+  id: EventID
+  created: number
+  metadata?: { [x: string]: any }
+  type: "persistent-pty.updated"
+  location?: LocationRef
+  data: { sessionID: SessionID; terminal: PersistentPtyInfo }
+}
+
 export type PersistentPtySnapshot = {
   info: PersistentPtyInfo
   text: string
@@ -2827,6 +2837,7 @@ export type V2Event =
   | PtyDeleted
   | PersistentPtyAdded
   | PersistentPtyRemoved
+  | PersistentPtyUpdated
   | ShellCreated
   | ShellExited
   | ShellDeleted
@@ -3121,6 +3132,14 @@ export const isRpcInternalError = (value: unknown): value is RpcInternalError =>
 export type PtyNotFoundError = { readonly _tag: "PtyNotFoundError"; readonly ptyID: string; readonly message: string }
 export const isPtyNotFoundError = (value: unknown): value is PtyNotFoundError =>
   typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "PtyNotFoundError"
+
+export type PtyFeatureUnsupportedError = {
+  readonly _tag: "PtyFeatureUnsupportedError"
+  readonly feature: string
+  readonly message: string
+}
+export const isPtyFeatureUnsupportedError = (value: unknown): value is PtyFeatureUnsupportedError =>
+  typeof value === "object" && value !== null && "_tag" in value && value["_tag"] === "PtyFeatureUnsupportedError"
 
 export type ScheduleNotFoundError = {
   readonly _tag: "ScheduleNotFoundError"
@@ -4299,6 +4318,7 @@ export type EventSubscribeInput = {
         | "pty.deleted"
         | "persistent-pty.added"
         | "persistent-pty.removed"
+        | "persistent-pty.updated"
         | "shell.created"
         | "shell.exited"
         | "shell.deleted"
@@ -4401,7 +4421,8 @@ export type ExperimentalPersistentPtyGetOutput = { data: PersistentPtyInfo }["da
 export type ExperimentalPersistentPtyUpdateInput = {
   readonly ptyID: string
   readonly attachmentID?: string | undefined
-  readonly size: { readonly cols: number; readonly rows: number }
+  readonly size?: { readonly cols: number; readonly rows: number } | undefined
+  readonly title?: string | null | undefined
 }
 
 export type ExperimentalPersistentPtyUpdateOutput = { data: PersistentPtyInfo }["data"]
