@@ -28,8 +28,8 @@ const toolItems = (part: Part): ReadonlyArray<Tool.Content> =>
     ? (part.state.content ?? [])
     : []
 
-/** A stored row, or the `session_part` rows of one assistant message. */
-type Refs = MessageRow["data"] | InboxRow["payload"] | { readonly content: ReadonlyArray<Part> }
+/** A stored row, one `session_part` row, or the `session_part` rows of one assistant message. */
+type Refs = MessageRow["data"] | InboxRow["payload"] | Part | { readonly content: ReadonlyArray<Part> }
 
 function collect(data: Refs, hashes: Set<string>) {
   if ("files" in data)
@@ -37,6 +37,8 @@ function collect(data: Refs, hashes: Set<string>) {
   if ("content" in data)
     for (const part of data.content)
       for (const item of toolItems(part)) if (isToolFileRef(item)) hashes.add(SessionStored.refHash(item.uri))
+  if ("type" in data && data.type === "tool")
+    for (const item of toolItems(data)) if (isToolFileRef(item)) hashes.add(SessionStored.refHash(item.uri))
 }
 
 /** A ref whose blob is gone reads as this text, so clients and the model never see a bare ref. */
@@ -354,14 +356,17 @@ function storedPartRefs(pending: Pending, part: Part): Part {
  * Moves a stored row's inline media into blobs whatever the flag says, for offline backfills. Returns the row to
  * store (the same object when nothing moved), the blobs to insert, and every hash the row then names.
  */
-export function split(data: MessageRow["data"] | InboxRow["payload"]) {
+export function split<T extends MessageRow["data"] | InboxRow["payload"] | Part>(data: T) {
   const pending: Pending = new Map()
-  const stored =
+  const stored = (
     "files" in data && data.files?.some((file) => !isFileRef(file))
       ? { ...data, files: data.files.map((file) => fileRef(pending, file)) }
       : "content" in data
         ? { ...data, content: data.content.map((part) => storedPartRefs(pending, part)) }
-        : data
+        : "type" in data && data.type === "tool"
+          ? storedPartRefs(pending, data)
+          : data
+  ) as T
   const result = pending.size > 0 ? stored : data
   return { data: result, moved: pending.size > 0, blobs: [...pending.values()], hashes: hashesOf(result) }
 }

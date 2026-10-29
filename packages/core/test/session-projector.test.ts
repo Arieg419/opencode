@@ -1871,4 +1871,31 @@ describe("SessionProjector", () => {
       ])
     }),
   )
+
+  it.effect("splits inline media out of a session_part tool row for offline blob backfills", () =>
+    Effect.sync(() => {
+      const hash = SessionBlob.hashBytes(png)
+      const split = SessionBlob.split({
+        type: "tool",
+        id: "call_shot",
+        name: "shot",
+        state: {
+          status: "completed",
+          input: {},
+          content: [{ type: "file", uri: `data:image/png;base64,${png.toString("base64")}`, mime: "image/png" }],
+          time: { created: 1, completed: 2 },
+        },
+      })
+      expect(split.moved).toBe(true)
+      expect(split.hashes).toEqual(new Set([hash]))
+      expect(split.blobs).toEqual([{ hash, mime: "image/png", bytes: png.byteLength, data: png }])
+      expect(split.data).toMatchObject({
+        type: "tool",
+        state: {
+          status: "completed",
+          content: [{ type: "file", uri: SessionStored.ref(hash), mime: "image/png" }],
+        },
+      })
+    }),
+  )
 })
