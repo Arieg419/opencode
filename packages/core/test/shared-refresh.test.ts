@@ -71,4 +71,21 @@ describe("SharedRefresh", () => {
       expect(yield* subscriber.use({ ...options, load: Effect.fail("offline") })).toEqual({ version: 2 })
     }),
   )
+
+  it.effect("loads again when a key has no value yet and tells the other subscribers", () =>
+    Effect.gen(function* () {
+      const shared = yield* SharedRefresh.Service
+      const first = yield* shared.subscriber<string>()
+      const second = yield* shared.subscriber<string>()
+      const notified = yield* first.changes.pipe(
+        Stream.take(1),
+        Stream.runDrain,
+        Effect.forkScoped({ startImmediately: true }),
+      )
+      expect(yield* first.use({ key: "models", load: Effect.fail("offline") })).toBeUndefined()
+
+      expect(yield* second.use({ key: "models", load: Effect.succeed("online") })).toBe("online")
+      yield* Fiber.join(notified)
+    }),
+  )
 })

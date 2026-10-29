@@ -28,7 +28,7 @@ export interface Options<A, E> {
 }
 
 export interface Subscriber<A> {
-  /** Moves this subscriber to `key` and returns its last good value, joining the first load if it is in flight. */
+  /** Moves this subscriber to `key` and returns its last good value. Without one, it joins or starts a load. */
   readonly use: <E>(options: Options<A, E>) => Effect.Effect<A | undefined>
   readonly release: Effect.Effect<void>
   /** Emits when a background refresh changes the value of the key this subscriber uses. */
@@ -48,7 +48,10 @@ interface Lease<A> {
 
 interface Entry<A> {
   value: Option.Option<A>
-  readonly ready: Deferred.Deferred<void>
+  loading: boolean
+  notify: boolean
+  settled: Deferred.Deferred<void>
+  wake: Deferred.Deferred<void>
   readonly leases: Set<Lease<A>>
   fiber?: Fiber.Fiber<void>
 }
@@ -82,22 +85,30 @@ const layer = Layer.effect(
       }
       const equals = options.equals ?? Equal.equals
       const interval = options.interval ?? Duration.minutes(10)
-      const entry: Entry<A> = { value: Option.none(), ready: Deferred.makeUnsafe(), leases: new Set([lease]) }
+      const entry: Entry<A> = {
+        value: Option.none(),
+        loading: true,
+        notify: false,
+        settled: Deferred.makeUnsafe(),
+        wake: Deferred.makeUnsafe(),
+        leases: new Set([lease]),
+      }
       entries.set(options.key, entry)
       entry.fiber = run(
         Effect.gen(function* () {
-          yield* load(options.key, entry, equals)
-          yield* Deferred.succeed(entry.ready, undefined)
-          yield* Effect.sleep(interval).pipe(
-            Effect.andThen(load(options.key, entry, equals)),
-            Effect.flatMap((changed) =>
-              changed
-                ? Effect.forEach(entry.leases, (item) => Queue.offer(item.changed, undefined), { discard: true })
-                : Effect.void,
-            ),
-            Effect.forever,
-          )
-        }),
+          const changed = yield* load(options.key, entry, equals)
+          const settled = entry.settled
+          entry.settled = Deferred.makeUnsafe()
+          entry.wake = Deferred.makeUnsafe()
+          entry.loading = false
+          // Subscribers of the first load read it from `use`.
+          if (changed && entry.notify)
+            yield* Effect.forEach(entry.leases, (item) => Queue.offer(item.changed, undefined), { discard: true })
+          yield* Deferred.succeed(settled, undefined)
+          entry.notify = true
+          yield* Effect.raceFirst(Effect.sleep(interval), Deferred.await(entry.wake))
+          entry.loading = true
+        }).pipe(Effect.forever),
       )
       return entry
     }
@@ -127,7 +138,10 @@ const layer = Layer.effect(
             if (state.key !== options.key) yield* releaseCurrent
             const entry = acquire(options, lease)
             state.key = options.key
-            yield* Deferred.await(entry.ready)
+            if (Option.isSome(entry.value)) return entry.value.value
+            const settled = entry.settled
+            if (!entry.loading) yield* Deferred.succeed(entry.wake, undefined)
+            yield* Deferred.await(settled)
             return Option.getOrUndefined(entry.value)
           }),
         release: releaseCurrent,

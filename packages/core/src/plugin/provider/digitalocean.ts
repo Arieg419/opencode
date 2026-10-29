@@ -121,24 +121,25 @@ export const DigitalOceanPlugin = define({
     const http = HttpClient.filterStatusOk(yield* HttpClient.HttpClient)
     const loading = Semaphore.makeUnsafe(1)
     const routers = yield* shared.subscriber<(typeof RoutersResponse.Type)["model_routers"]>()
-    const loaded: { routers: (typeof RoutersResponse.Type)["model_routers"] } = { routers: [] }
+    const loaded: { key?: string; routers: (typeof RoutersResponse.Type)["model_routers"] } = { routers: [] }
 
     const load = Effect.fn("DigitalOceanPlugin.load")(function* () {
       const connection = yield* ctx.integration.connection.active(integrationID)
       const credential = connection
         ? yield* ctx.integration.connection.resolve(connection).pipe(Effect.orElseSucceed(() => undefined))
         : undefined
-      if (
-        credential?.type !== "oauth" ||
-        credential.methodID !== methodID ||
-        (credential.expires !== 0 && credential.expires <= (yield* Clock.currentTimeMillis))
-      ) {
+      const key = `digitalocean:${IntegrationConnection.key(connection)}`
+      const valid = credential?.type === "oauth" && credential.methodID === methodID
+      if (!valid || loaded.key !== key) {
+        loaded.key = undefined
         loaded.routers = []
         yield* routers.release
-        return
       }
+      if (!valid) return
+      // An expired token keeps the routers it already loaded until the credential is refreshed.
+      if (credential.expires !== 0 && credential.expires <= (yield* Clock.currentTimeMillis)) return
       const result = yield* routers.use({
-        key: `digitalocean:${IntegrationConnection.key(connection)}`,
+        key,
         load: http
           .execute(
             HttpClientRequest.get(routersEndpoint).pipe(
@@ -153,6 +154,7 @@ export const DigitalOceanPlugin = define({
             Effect.timeout("10 seconds"),
           ),
       })
+      loaded.key = key
       loaded.routers = result ?? []
     })
 
