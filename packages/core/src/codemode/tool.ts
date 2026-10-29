@@ -192,15 +192,13 @@ function progressHooks(record: (update: (items: Array<ExecuteCall>) => Array<Exe
   } satisfies CodeMode.Hooks
 }
 
-const MAX_CALL_ERROR = 1_000
-
 // A program that catches a failure may never return or log it, so its row keeps the message the program saw.
 // Interrupted calls carry no message.
 function callError(result: CodeMode.CallResult) {
   if (result.status !== "failure") return {}
   const message = result.error instanceof globalThis.Error ? result.error.message : String(result.error)
   if (message === "") return {}
-  return { error: message.length > MAX_CALL_ERROR ? `${message.slice(0, MAX_CALL_ERROR)}…` : message }
+  return { error: message }
 }
 
 export const catalog = (inventory: Inventory) => {
