@@ -200,7 +200,11 @@ export const layer = (options?: Options) =>
           return
         }
         if (yield* execution.isActive(recovery.childSessionID)) return
-        if (!(yield* prepareResume(recovery.childSessionID))) {
+        const limit = yield* sessions.get(recovery.parentSessionID).pipe(
+          Effect.flatMap(queue.limit),
+          Effect.orElseSucceed(() => undefined),
+        )
+        if (limit === undefined && !(yield* prepareResume(recovery.childSessionID))) {
           yield* notify({ status: "error", error: RESUME_EXHAUSTED.message })
           return
         }
@@ -215,18 +219,21 @@ export const layer = (options?: Options) =>
             return SubagentCompletion.text(assistant)
           }),
         )
-        // Recovered children, started or still queued, line up again in recovery order.
-        const limit = yield* sessions.get(recovery.parentSessionID).pipe(
-          Effect.flatMap(queue.limit),
-          Effect.orElseSucceed(() => undefined),
-        )
+        // Recovered children, started or still queued, line up again in recovery order. Only a child that already
+        // ran gets the restart notice, once its slot opens; one that never started just takes its first turn.
+        const held = Effect.gen(function* () {
+          if ((yield* store.context(recovery.childSessionID)).length === 0) return yield* run
+          if (!(yield* prepareResume(recovery.childSessionID)))
+            return yield* Effect.fail(new Error(RESUME_EXHAUSTED.message))
+          return yield* run
+        })
         yield* jobs.start({
           id: background.id,
           type: "subagent",
           title: recovery.description,
           notificationID: background.notificationID,
           recovery,
-          run: limit === undefined ? run : queue.hold({ limit }, run),
+          run: limit === undefined ? run : queue.hold({ sessionID: recovery.childSessionID, limit }, held),
         })
         yield* jobs.background(background.id)
         yield* jobs.wait({ id: background.id }).pipe(

@@ -1,11 +1,12 @@
 import { describe, expect } from "bun:test"
 import { Deferred, Effect, Fiber, Layer, Schedule, Schema } from "effect"
+import { mkdir } from "fs/promises"
 import path from "path"
 import { Money } from "@opencode/schema/money"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { Global } from "@opencode/util/global"
-import { makeGlobalNode, makeLocationNode } from "@opencode/util/effect/app-node"
+import { makeLocationNode } from "@opencode/util/effect/app-node"
 import { Database } from "@opencode/core/database/database"
 import { Bus } from "@opencode/core/bus"
 import { Config } from "@opencode/core/config"
@@ -22,7 +23,8 @@ import { SessionEvent } from "@opencode/core/session/event"
 import { SessionExecution } from "@opencode/core/session/execution"
 import { SessionRestart } from "@opencode/core/session/execution/restart"
 import { SessionMessage } from "@opencode/core/session/message"
-import { SessionStore } from "@opencode/core/session/store"
+import { SessionRunner } from "@opencode/core/session/runner/index"
+import { SessionRunnerLLM } from "@opencode/core/session/runner/llm"
 import { SubagentJob } from "@opencode/core/session/subagent-job"
 import { SubagentQueue } from "@opencode/core/session/subagent-queue"
 import { Plugin } from "@opencode/core/plugin"
@@ -53,43 +55,39 @@ const gate = (sessionID: Session.ID) => {
 }
 const finish = (sessionID: Session.ID) => Effect.sync(() => gate(sessionID).resolve())
 
-const executionNode = makeGlobalNode({
-  service: SessionExecution.Service,
+// Real execution and interruption; only the model turn is replaced.
+const runnerNode = makeLocationNode({
+  service: SessionRunner.Service,
   layer: Layer.effect(
-    SessionExecution.Service,
+    SessionRunner.Service,
     Effect.gen(function* () {
       const bus = yield* Bus.Service
-      const resume = Effect.fn("SubagentQueueTest.resume")(function* (sessionID: Session.ID) {
-        if (parents.has(sessionID)) return
-        started.push(sessionID)
-        yield* Effect.promise(() => gate(sessionID).promise)
-        const assistantMessageID = SessionMessage.ID.create()
-        yield* bus.publish(SessionEvent.Step.Started, {
-          sessionID,
-          assistantMessageID,
-          agent: Agent.ID.make("reviewer"),
-          model: childModel,
-          started: 0,
-        })
-        yield* bus.publish(SessionEvent.Step.Ended, {
-          sessionID,
-          assistantMessageID,
-          finish: "stop",
-          cost: Money.USD.zero,
-          tokens,
-        })
-      })
-      return SessionExecution.Service.of({
-        active: Effect.succeed(new Set()),
-        isActive: () => Effect.succeed(false),
-        resume,
-        wake: () => Effect.void,
-        interrupt: () => Effect.succeed(false),
-        awaitIdle: () => Effect.void,
+      return SessionRunner.Service.of({
+        drain: Effect.fn("SubagentQueueTest.drain")(function* ({ sessionID }) {
+          if (parents.has(sessionID)) return SessionRunner.DrainResult.Complete()
+          started.push(sessionID)
+          yield* Effect.promise(() => gate(sessionID).promise)
+          const assistantMessageID = SessionMessage.ID.create()
+          yield* bus.publish(SessionEvent.Step.Started, {
+            sessionID,
+            assistantMessageID,
+            agent: Agent.ID.make("reviewer"),
+            model: childModel,
+            started: 0,
+          })
+          yield* bus.publish(SessionEvent.Step.Ended, {
+            sessionID,
+            assistantMessageID,
+            finish: "stop",
+            cost: Money.USD.zero,
+            tokens,
+          })
+          return SessionRunner.DrainResult.Complete()
+        }),
       })
     }),
   ),
-  deps: [Bus.node, SessionStore.node],
+  deps: [Bus.node],
 })
 
 const subagentPluginSupervisor = makeLocationNode({
@@ -126,9 +124,10 @@ const it = testEffect(
       SessionRestart.node,
       SubagentQueue.node,
       KV.node,
+      Global.node,
     ]),
     [
-      SessionExecution.node.replace(executionNode),
+      SessionRunnerLLM.node.replace(runnerNode),
       Global.node.replace(tempGlobalLayer),
       offlineModels,
       PluginSupervisor.node.replace(subagentPluginSupervisor),
@@ -145,7 +144,8 @@ const until = (check: () => boolean) =>
     Effect.timeout("2 seconds"),
   )
 
-const setup = (experimental: Record<string, number>) =>
+// `experimental` goes to global config, `project` to the project's own opencode.json.
+const setup = (experimental: Record<string, number>, project?: Record<string, number>) =>
   Effect.gen(function* () {
     started = []
     gates = new Map()
@@ -153,7 +153,13 @@ const setup = (experimental: Record<string, number>) =>
       Effect.promise(() => tmpdir()),
       (dir) => Effect.promise(() => dir[Symbol.asyncDispose]()),
     )
-    yield* Effect.promise(() => Bun.write(path.join(dir.path, "opencode.json"), JSON.stringify({ experimental })))
+    const global = yield* Global.Service
+    yield* Effect.promise(() => mkdir(global.config, { recursive: true }))
+    yield* Effect.promise(() => Bun.write(path.join(global.config, "opencode.json"), JSON.stringify({ experimental })))
+    if (project !== undefined)
+      yield* Effect.promise(() =>
+        Bun.write(path.join(dir.path, "opencode.json"), JSON.stringify({ experimental: project })),
+      )
     const location = Location.Ref.make({ directory: AbsolutePath.make(dir.path) })
     const sessions = yield* Session.Service
     const root = yield* sessions.create({ location })
@@ -174,10 +180,15 @@ const setup = (experimental: Record<string, number>) =>
     ).pipe(Effect.provide(locations.get(location)))
     const registry = yield* Tool.Service.pipe(Effect.provide(locations.get(location)))
     let calls = 0
-    const spawn = (sessionID: Session.ID, input: { background?: boolean; sessionID?: Session.ID } = {}) =>
+    const spawn = (
+      sessionID: Session.ID,
+      input: { background?: boolean; sessionID?: Session.ID } = {},
+      progress?: (update: Record<string, unknown>) => Effect.Effect<void>,
+    ) =>
       executeTool(registry, {
         sessionID,
         ...toolIdentity,
+        progress,
         call: {
           type: "tool-call",
           id: `call-${++calls}`,
@@ -191,22 +202,91 @@ const setup = (experimental: Record<string, number>) =>
   })
 
 describe("SubagentQueue", () => {
-  it.live("a waiter with a small cap never blocks one with a larger cap behind it", () =>
+  it.live("only global config sets the cap", () =>
     Effect.gen(function* () {
+      const { background } = yield* setup({}, { subagent_concurrency: 1 })
+      const results = [yield* background(), yield* background(), yield* background()]
+      expect(results.map((result) => result.queued)).toEqual([undefined, undefined, undefined])
+      yield* until(() => started.length === 3)
+      yield* Effect.forEach(results.map(outputSessionID), finish)
+    }).pipe(Effect.scoped),
+  )
+
+  it.live("stopping, escaping or removing a queued subagent takes it out of line for good", () =>
+    Effect.gen(function* () {
+      const { sessions, background } = yield* setup({ subagent_concurrency: 1 })
+      const jobs = yield* Job.Service
+      const running = outputSessionID(yield* background())
+      const [stopped, escaped, removed] = yield* Effect.forEach([1, 2, 3], () =>
+        background().pipe(Effect.map(outputSessionID)),
+      )
       const queue = yield* SubagentQueue.Service
-      const release = yield* Deferred.make<void>()
-      const order: string[] = []
-      const hold = (name: string, limit: number) =>
-        queue
-          .hold({ limit }, Effect.sync(() => order.push(name)).pipe(Effect.andThen(Deferred.await(release))))
-          .pipe(Effect.forkChild({ startImmediately: true }))
-      const fibers = [yield* hold("a", 1), yield* hold("b", 1), yield* hold("c", 3)]
-      yield* until(() => order.length === 2)
-      expect(order).toEqual(["a", "c"])
-      yield* Deferred.succeed(release, undefined)
-      yield* Effect.forEach(fibers, Fiber.join)
-      expect(order).toEqual(["a", "c", "b"])
-    }),
+      yield* sessions.interrupt(stopped!)
+      yield* sessions.interrupt(escaped!, { resume: true })
+      yield* sessions.remove(removed!)
+      // A cancelled background job drops out of the job list once its parent is notified.
+      for (const id of [stopped!, escaped!, removed!]) {
+        expect((yield* jobs.get(id))?.status).not.toBe("running")
+        expect(yield* queue.waiting(id)).toBeUndefined()
+      }
+      // A second Escape on the cancelled child must not wake its never-sent prompt either.
+      yield* sessions.interrupt(escaped!, { resume: true })
+      yield* Effect.sleep("50 millis")
+      expect(started).toEqual([running])
+
+      yield* finish(running)
+      const next = outputSessionID(yield* background())
+      yield* until(() => started.includes(next))
+      expect(started).toEqual([running, next])
+      yield* finish(next)
+      yield* jobs.wait({ id: next })
+    }).pipe(Effect.scoped),
+  )
+
+  it.live("a follow-up to a queued subagent waits in line with it", () =>
+    Effect.gen(function* () {
+      const { sessions, root, spawn, background } = yield* setup({ subagent_concurrency: 1 })
+      const jobs = yield* Job.Service
+      const running = outputSessionID(yield* background())
+      const queued = outputSessionID(yield* background())
+      const steered = yield* spawn(root.id, { sessionID: queued, background: true })
+      yield* Effect.sleep("50 millis")
+      expect(started).toEqual([running])
+      expect(steered.metadata).toEqual({ sessionID: queued, status: "running", queued: 0 })
+      expect((yield* sessions.inbox(queued)).map((item) => item.delivery)).toEqual(["queue", "queue"])
+
+      yield* finish(running)
+      yield* until(() => started.length === 2)
+      expect(started).toEqual([running, queued])
+      yield* finish(queued)
+      expect((yield* jobs.wait({ id: queued })).info?.status).toBe("completed")
+      expect(started).toEqual([running, queued])
+    }).pipe(Effect.scoped),
+  )
+
+  it.live("aborting a foreground call before it waits cancels its queued subagent", () =>
+    Effect.gen(function* () {
+      const { root, spawn, background } = yield* setup({ subagent_concurrency: 1 })
+      const jobs = yield* Job.Service
+      const running = outputSessionID(yield* background())
+      const queued = yield* Deferred.make<Session.ID>()
+      // Holds the call at its queued progress update, between starting the job and waiting on it.
+      const call = yield* spawn(root.id, {}, (update) =>
+        update.queued === undefined
+          ? Effect.void
+          : Deferred.succeed(queued, outputSessionID(update)).pipe(Effect.andThen(Effect.never)),
+      ).pipe(Effect.forkChild({ startImmediately: true }))
+      const child = yield* Deferred.await(queued)
+      yield* Fiber.interrupt(call)
+      expect((yield* jobs.get(child))?.status).toBe("cancelled")
+
+      yield* finish(running)
+      const next = outputSessionID(yield* background())
+      yield* until(() => started.includes(next))
+      expect(started).toEqual([running, next])
+      yield* finish(next)
+      yield* jobs.wait({ id: next })
+    }).pipe(Effect.scoped),
   )
 
   it.live("holds new subagents past the cap and starts them in FIFO order", () =>
@@ -307,9 +387,21 @@ describe("SubagentQueue", () => {
     Effect.gen(function* () {
       const { sessions, root } = yield* setup({ subagent_concurrency: 1 })
       const kv = yield* KV.Service
+      const bus = yield* Bus.Service
       const children = yield* Effect.forEach([1, 2], (n) =>
         sessions.create({ parentID: root.id, title: `recovered ${n}`, agent: Agent.ID.make("reviewer") }),
       )
+      // The first child had already run before the restart; the second never started.
+      yield* bus.publish(SessionEvent.Synthetic, {
+        sessionID: children[0]!.id,
+        text: "earlier turn",
+        description: "earlier turn",
+        metadata: {},
+      })
+      const notices = (sessionID: Session.ID) =>
+        sessions
+          .context(sessionID)
+          .pipe(Effect.map((messages) => messages.filter((message) => JSON.stringify(message).includes("restarted"))))
       yield* Effect.forEach(children, (child) => {
         const notificationID = SessionMessage.ID.create()
         return kv.set(`job.background/${notificationID}`, {
@@ -328,9 +420,12 @@ describe("SubagentQueue", () => {
       yield* (yield* SessionRestart.Service).resumeSuspendedSessions
       yield* until(() => started.length === 1)
       expect(started).toEqual([children[0]!.id])
+      expect((yield* notices(children[0]!.id)).length).toBe(1)
+      expect(yield* notices(children[1]!.id)).toEqual([])
       yield* finish(children[0]!.id)
       yield* until(() => started.length === 2)
       expect(started).toEqual([children[0]!.id, children[1]!.id])
+      expect(yield* notices(children[1]!.id)).toEqual([])
       yield* finish(children[1]!.id)
     }).pipe(Effect.scoped),
   )

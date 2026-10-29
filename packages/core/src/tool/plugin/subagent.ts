@@ -210,11 +210,15 @@ export const Plugin = {
 
               const background = input.background === true
               const cap = existing === undefined ? yield* queue.limit(parent) : undefined
+              // A follow-up to a child still waiting for a slot joins its line instead of starting it.
+              const held =
+                cap !== undefined || (existing !== undefined && (yield* queue.waiting(existing.id)) !== undefined)
               yield* context.progress({ sessionID: child.id, status: "running" })
 
               // Standard prompt admission outside the job: Job.start joining a running child skips
               // its run effect, and the default wake starts an idle child or steers a running one.
-              // A capped child is admitted without waking so its first turn waits for a queue slot.
+              // A held child's prompts are queued without waking: only its job's run promotes them, in order,
+              // once a slot opens, and an Escape (which resumes steers) can't start it early.
               yield* sessions
                 .prompt({
                   sessionID: child.id,
@@ -222,7 +226,11 @@ export const Plugin = {
                     existing === undefined
                       ? ["You are a subagent spawned by another session.", input.prompt].join("\n")
                       : input.prompt,
-                  ...((background || cap !== undefined) && existing === undefined ? { resume: false } : {}),
+                  ...(held
+                    ? { resume: false, delivery: "queue" as const }
+                    : background && existing === undefined
+                      ? { resume: false }
+                      : {}),
                 })
                 .pipe(
                   Effect.mapError(
@@ -237,46 +245,51 @@ export const Plugin = {
                 agent: agent.name,
                 description: input.description,
               }
-              const queued = yield* Deferred.make<number | undefined>()
               const started = yield* Deferred.make<void>()
-              yield* subagents.start(
-                recovery,
-                cap === undefined
-                  ? undefined
-                  : {
-                      limit: cap,
-                      queued: (ahead) => Deferred.succeed(queued, ahead).pipe(Effect.asVoid),
-                      started: Effect.all([Deferred.succeed(queued, undefined), Deferred.succeed(started, undefined)], {
-                        discard: true,
-                      }),
-                    },
+              const launch = Effect.gen(function* () {
+                // The job forks its hold immediately, so a child that has to wait is already in line here.
+                const ahead = held ? yield* queue.waiting(child.id) : undefined
+                if (ahead !== undefined)
+                  yield* context.progress({ sessionID: child.id, status: "running", queued: ahead })
+                if (background) {
+                  yield* subagents.background(recovery)
+                  return { type: "background", ahead } as const
+                }
+                // Clears the queued note once a slot opens; progress is only valid while this call runs.
+                const announce =
+                  ahead === undefined || cap === undefined
+                    ? undefined
+                    : yield* Deferred.await(started).pipe(
+                        Effect.andThen(context.progress({ sessionID: child.id, status: "running" })),
+                        Effect.forkChild({ startImmediately: true }),
+                      )
+                const result = yield* jobs
+                  .block({ id: child.id, sessionID: context.sessionID })
+                  .pipe(Effect.ensuring(announce === undefined ? Effect.void : Fiber.interrupt(announce)))
+                return { type: "foreground", result } as const
+              })
+              // Once the job exists, an abort before it is handed off or awaited cancels it rather than orphaning it.
+              const launched = yield* Effect.uninterruptibleMask((restore) =>
+                subagents
+                  .start(
+                    recovery,
+                    cap === undefined
+                      ? undefined
+                      : {
+                          sessionID: child.id,
+                          limit: cap,
+                          started: Deferred.succeed(started, undefined).pipe(Effect.asVoid),
+                        },
+                  )
+                  .pipe(
+                    Effect.andThen(restore(launch)),
+                    Effect.onInterrupt(() =>
+                      Effect.all([sessions.interrupt(child.id), jobs.cancel(child.id)], { discard: true }),
+                    ),
+                  ),
               )
-              // The hold settles `queued` as soon as the job starts: with its place in line, or undefined.
-              const ahead = cap === undefined ? undefined : yield* Deferred.await(queued)
-              if (ahead !== undefined)
-                yield* context.progress({ sessionID: child.id, status: "running", queued: ahead })
-
-              if (background) {
-                yield* subagents.background(recovery)
-                return backgroundResult(child.id, ahead)
-              }
-              // Clears the queued note once a slot opens; progress is only valid while this call runs.
-              const announce =
-                ahead === undefined
-                  ? undefined
-                  : yield* Deferred.await(started).pipe(
-                      Effect.andThen(context.progress({ sessionID: child.id, status: "running" })),
-                      Effect.forkChild({ startImmediately: true }),
-                    )
-
-              const result = yield* jobs.block({ id: child.id, sessionID: context.sessionID }).pipe(
-                Effect.onInterrupt(() =>
-                  Effect.all([sessions.interrupt(child.id), jobs.cancel(child.id)], {
-                    discard: true,
-                  }),
-                ),
-                Effect.ensuring(announce === undefined ? Effect.void : Fiber.interrupt(announce)),
-              )
+              if (launched.type === "background") return backgroundResult(child.id, launched.ahead)
+              const result = launched.result
               if (result?.type === "backgrounded") {
                 yield* subagents.notify(recovery, result.info.started_at)
                 return backgroundResult(child.id)

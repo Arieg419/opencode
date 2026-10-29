@@ -13,6 +13,7 @@ import { SessionSchema } from "./schema.js"
 import { SessionStore } from "./store.js"
 import { toSessionError } from "./to-session-error.js"
 import { SessionInbox } from "./inbox.js"
+import { SubagentQueue } from "./subagent-queue.js"
 
 export interface Interface {
   /** Snapshots active execution owned by this process. */
@@ -58,6 +59,7 @@ export const layer = Layer.effect(
     const instances = yield* Instance.Service
     const bus = yield* Bus.Service
     const jobs = yield* Job.Service
+    const queue = yield* SubagentQueue.Service
     const db = (yield* Database.Service).db
     const reportLifecycle = <A>(sessionID: SessionSchema.ID, effect: Effect.Effect<A>) =>
       effect.pipe(
@@ -150,6 +152,13 @@ export const layer = Layer.effect(
       isActive: coordinator.isActive,
       interrupt: (sessionID, options) =>
         Effect.gen(function* () {
+          // A subagent still waiting for a queue slot has no execution yet. Cancelling its job takes it out of
+          // line for good; the interrupt covers a slot that opened meanwhile.
+          if ((yield* queue.waiting(sessionID)) !== undefined) {
+            yield* jobs.cancel(sessionID)
+            yield* coordinator.interrupt(sessionID, "user")
+            return true
+          }
           const interrupted = yield* coordinator.interrupt(sessionID, "user")
           if (!options?.resume) return interrupted
           // Resume steering input and between-turn control work from the interrupted
@@ -176,7 +185,7 @@ export const layer = Layer.effect(
 export const node = makeGlobalNode({
   service: Service,
   layer,
-  deps: [SessionStore.node, Instance.node, Bus.node, Database.node, Job.node],
+  deps: [SessionStore.node, Instance.node, Bus.node, Database.node, Job.node, SubagentQueue.node],
 })
 
 /** Low-level compatibility layer for callers that only need durable Session recording. */

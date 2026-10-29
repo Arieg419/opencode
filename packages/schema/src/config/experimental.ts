@@ -42,7 +42,7 @@ export class Info extends Schema.Class<Info>("ConfigExperimental.Info")({
   }),
   subagent_concurrency: PositiveInt.pipe(optional).annotate({
     description:
-      "Maximum subagents of top-level sessions running at once across the server. New ones wait in line before their first turn. Defaults to no limit.",
+      "Maximum subagents of top-level sessions running at once across the server. New ones wait in line before their first turn. Read from global config only. Defaults to no limit.",
   }),
   location_idle_timeout: Schema.Union([Schema.DurationFromString, Schema.Literal(false)])
     .pipe(optional)

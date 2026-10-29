@@ -645,11 +645,12 @@ start another subagent.
 ### Subagent concurrency
 
 `subagent_concurrency` caps how many subagents of top-level sessions run at once across the server. Extra ones wait
-in line, oldest first, and start their first turn when a running one finishes. Follow-ups to an existing subagent and
-subagents started by other subagents never wait. Unset by default, which means no limit.
+in line, oldest first, and start their first turn when a running one finishes. A follow-up to a waiting subagent
+waits with it; follow-ups to a running subagent and subagents started by other subagents never wait. Unset by
+default, which means no limit.
 
-The count covers every project on the server with a cap set, and each new subagent waits while its own project's
-cap is reached. Set it in your global config for one shared limit.
+The limit covers every project on the server, so it is read only from global config. A project config that sets it
+is ignored with a warning.
 
 ### Portable shell scanner
 
