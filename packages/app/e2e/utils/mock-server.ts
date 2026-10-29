@@ -1071,7 +1071,7 @@ function mockHandlers(
                 ? Effect.fail(
                     new MockPtyFeatureUnsupported({
                       feature: "rename",
-                      message: "The opencode-pty daemon does not support renaming terminals",
+                      message: "Terminal renaming will be available after OpenCode's terminal service restarts",
                     }),
                   )
                 : Effect.sync(() => ({ data: state.persistentPty.update(found.id, ctx.payload) })),

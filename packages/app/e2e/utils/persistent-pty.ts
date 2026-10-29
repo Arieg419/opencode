@@ -186,11 +186,22 @@ export function createPersistentPty(
   const broadcast = (id: string, message: MockPersistentPtyMessage | Uint8Array) =>
     open(id).forEach((item) => send(item, message))
 
-  const close = (connection: Connection, code: number, reason: string) => {
-    if (connection.closed) return Promise.resolve()
-    connection.closed = true
+  // Server-side closes release control here instead of relying on Playwright's `onClose`.
+  const close = (items: Connection[], code: number, reason: string) => {
+    const closing = items.filter((item) => !item.closed)
+    closing.forEach((item) => (item.closed = true))
+    closing.forEach(release)
 
-    return connection.ws.close({ code, reason })
+    return Promise.all(closing.map((item) => item.ws.close({ code, reason }))).then(() => undefined)
+  }
+
+  // Like the daemon, control passes to the most recent remaining attachment. A late close of a replaced socket that
+  // shares the controller's attachment ID is an observer by then, so it leaves the new controller alone.
+  const release = (connection: Connection) => {
+    const terminal = terminals.get(connection.id)
+
+    if (!terminal || connection.role !== "controller" || terminal.controller !== connection.attachmentID) return
+    setController(terminal, open(connection.id).at(-1)?.attachmentID)
   }
 
   const get = (id: string) => {
@@ -238,9 +249,20 @@ export function createPersistentPty(
     })
   }
 
+  // Skips IDs that a seed claims or that a terminal used, live or removed.
+  const allocate = (): string => {
+    counters.id += 1
+    const id = `pty_persistent_${counters.id}`
+
+    if (terminals.has(id) || pty.removed.includes(id) || input.config?.initial?.some((seed) => seed.id === id)) {
+      return allocate()
+    }
+
+    return id
+  }
+
   const build = (seed: MockPersistentPtySeed) => {
-    if (seed.id === undefined) counters.id += 1
-    const id = seed.id ?? `pty_persistent_${counters.id}`
+    const id = seed.id ?? allocate()
 
     if (!id.startsWith("pty")) throw new Error(`Persistent PTY IDs must start with "pty": ${id}`)
     const bytes = encoder.encode(seed.output ?? "")
@@ -277,7 +299,7 @@ export function createPersistentPty(
     pty.terminals.splice(pty.terminals.indexOf(terminal.info), 1)
     pty.removed.push(terminal.info.id)
     tickets.splice(0, tickets.length, ...tickets.filter((item) => item.id !== terminal.info.id))
-    open(terminal.info.id).forEach((item) => void close(item, 1000, ""))
+    void close(open(terminal.info.id), 1000, "")
     emit([
       { ...event("persistent-pty.removed"), data: { sessionID: terminal.info.sessionID, ptyID: terminal.info.id } },
     ])
@@ -354,12 +376,12 @@ export function createPersistentPty(
     },
     rename: (id, title) => rename(get(id), title),
     controller: (id) => get(id).controller,
-    close: (id, code = 1011, reason = "mock socket closed") =>
-      Promise.all(open(id).map((item) => close(item, code, reason))).then(() => undefined),
-    async restart() {
+    close: (id, code = 1011, reason = "mock socket closed") => close(open(id), code, reason),
+    restart() {
       tickets.splice(0)
       terminals.forEach((terminal) => (terminal.controller = undefined))
-      await Promise.all(connections.map((item) => close(item, 1012, "server restarted")))
+
+      return close(connections, 1012, "server restarted")
     },
   }
 
@@ -419,18 +441,22 @@ export function createPersistentPty(
       const index = tickets.findIndex((item) => item.id === id && item.ticket === ticket)
       const cursor = Number(url.searchParams.get("cursor") ?? "0")
 
-      const reason = !terminal
-        ? "terminal unavailable"
-        : index < 0
-          ? "No unused ticket was issued for this terminal"
-          : !Number.isSafeInteger(cursor) || cursor < 0
-            ? "Invalid cursor"
-            : undefined
+      const reason =
+        !terminal || pty.capability === false
+          ? "terminal unavailable"
+          : index < 0
+            ? "No unused ticket was issued for this terminal"
+            : !Number.isSafeInteger(cursor) || cursor < 0
+              ? "Invalid cursor"
+              : undefined
 
       if (!terminal || reason) {
         pty.rejected.push({ id, url, reason: reason ?? "terminal unavailable" })
 
-        return ws.close({ code: terminal ? 1008 : 4404, reason: reason ?? "terminal unavailable" })
+        return ws.close({
+          code: reason === "terminal unavailable" ? 4404 : 1008,
+          reason: reason ?? "terminal unavailable",
+        })
       }
 
       tickets.splice(index, 1)
@@ -457,7 +483,7 @@ export function createPersistentPty(
         input: [],
         messages: [],
         closed: false,
-        close: (code = 1011, reason = "mock socket closed") => close(connection, code, reason),
+        close: (code = 1011, reason = "mock socket closed") => close([connection], code, reason),
       }
 
       ws.onMessage((message) => {
@@ -476,11 +502,9 @@ export function createPersistentPty(
         interact(connection, { cols, rows }, type === 1 ? payload : undefined)
       })
       ws.onClose(() => {
+        if (connection.closed) return
         connection.closed = true
-
-        if (terminals.get(id) !== terminal || terminal.controller !== attachmentID) return
-        // Like the daemon, control passes to the most recent remaining attachment.
-        setController(terminal, open(id).at(-1)?.attachmentID)
+        release(connection)
       })
       connections.push(connection)
 
@@ -490,7 +514,7 @@ export function createPersistentPty(
       }
 
       connection.role = terminal.controller === attachmentID ? "controller" : "observer"
-      const start = Math.min(cursor, terminal.bytes.length)
+      const start = Math.max(terminal.info.output.head, Math.min(cursor, terminal.bytes.length))
 
       send(connection, {
         type: "attached",
@@ -501,7 +525,7 @@ export function createPersistentPty(
         generation: terminal.generation,
         replay: {
           requestedOffset: cursor,
-          availableOffset: terminal.info.output.head,
+          availableOffset: start,
           endOffset: terminal.bytes.length,
           truncated: false,
         },
