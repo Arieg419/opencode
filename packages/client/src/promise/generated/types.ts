@@ -329,6 +329,8 @@ export type ScheduleWhenCron = { type: "cron"; cron: string; tz?: string }
 
 export type ScheduleConditionShell = { type: "shell"; run: string; is?: string; matches?: string; changes?: boolean }
 
+export type ScheduleConditionCode = { type: "code"; code: string }
+
 export type ScheduleActionPrompt = { type: "prompt"; prompt: string }
 
 export type ScheduleStatus = "active" | "paused" | "done"
@@ -908,7 +910,7 @@ export type ScheduleWhenIn = { type: "in"; in: ScheduleDuration; tz?: string }
 
 export type ScheduleWhenEvery = { type: "every"; every: ScheduleDuration; tz?: string }
 
-export type ScheduleCondition = ScheduleConditionShell
+export type ScheduleCondition = ScheduleConditionShell | ScheduleConditionCode
 
 export type ScheduleAction = ScheduleActionPrompt
 
@@ -2304,7 +2306,14 @@ export type ConfigEntry =
         timezone?: string
         permissions?: PermissionRuleset
         policies?: Array<{
-          action: "provider.use" | "tool.use" | "integration.use"
+          action:
+            | "provider.use"
+            | "tool.use"
+            | "integration.connect"
+            | "integration.use"
+            | "mcp.use"
+            | "skill.use"
+            | "plugin.use"
           resource: string
           effect: "allow" | "deny"
         }>
@@ -2467,7 +2476,14 @@ export type ConfigEntry =
           subagent_depth?: number
           location_idle_timeout?: string | false
           policies?: Array<{
-            action: "provider.use" | "tool.use" | "integration.use"
+            action:
+              | "provider.use"
+              | "tool.use"
+              | "integration.connect"
+              | "integration.use"
+              | "mcp.use"
+              | "skill.use"
+              | "plugin.use"
             resource: string
             effect: "allow" | "deny"
           }>
@@ -4466,10 +4482,40 @@ export type ExperimentalScheduleCreateInput = {
       )
     | undefined
   readonly if?:
-    | { readonly run: string; readonly is?: string; readonly matches?: string; readonly changes?: boolean }
+    | (
+        | {
+            readonly run: string
+            readonly is?: string
+            readonly matches?: string
+            readonly changes?: boolean
+            readonly code?: never
+          }
+        | {
+            readonly code: string
+            readonly run?: never
+            readonly is?: never
+            readonly matches?: never
+            readonly changes?: never
+          }
+      )
     | undefined
   readonly until?:
-    | { readonly run: string; readonly is?: string; readonly matches?: string; readonly changes?: boolean }
+    | (
+        | {
+            readonly run: string
+            readonly is?: string
+            readonly matches?: string
+            readonly changes?: boolean
+            readonly code?: never
+          }
+        | {
+            readonly code: string
+            readonly run?: never
+            readonly is?: never
+            readonly matches?: never
+            readonly changes?: never
+          }
+      )
     | undefined
   readonly ends?: { readonly after?: string; readonly at?: string; readonly times?: number } | undefined
   readonly prompt: string
