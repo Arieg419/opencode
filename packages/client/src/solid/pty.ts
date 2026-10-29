@@ -2,38 +2,29 @@ import { PersistentPty } from "@opencode/schema/persistent-pty"
 import { Schema } from "effect"
 import type { ExperimentalPersistentPtyConnectTokenInput, OpenCodeClient, PtyConnectTokenInput } from "../promise"
 
+// Declares only the fields clients read, so servers can add or drop the rest without a client silently ignoring a
+// message it depends on.
 export const PersistentPtyMessage = Schema.Union([
   Schema.Struct({
     type: Schema.Literal("attached"),
     inputProtocol: Schema.optional(Schema.Number),
-    // Clients only need the size; the rest of the terminal info changes across server versions.
     info: Schema.Struct({ size: PersistentPty.Info.fields.size }),
-    role: Schema.Literals(["controller", "observer"]),
-    generation: Schema.Number,
-    replay: Schema.Struct({
-      requestedOffset: Schema.Number,
-      availableOffset: Schema.Number,
-      endOffset: Schema.Number,
-      truncated: Schema.Boolean,
-    }),
+    role: Schema.optional(Schema.Literals(["controller", "observer"])),
   }),
-  Schema.Struct({ type: Schema.Literal("replay_complete"), endOffset: Schema.Number }),
+  Schema.Struct({ type: Schema.Literal("replay_complete") }),
   Schema.Struct({
     type: Schema.Literal("resized"),
     cols: Schema.Number,
     rows: Schema.Number,
-    generation: Schema.Number,
     checkpoint: Schema.String,
   }),
   Schema.Struct({
     type: Schema.Literal("controller_changed"),
     attachmentID: Schema.optional(Schema.NullOr(Schema.String)),
-    generation: Schema.Number,
   }),
   Schema.Struct({
     type: Schema.Literal("exited"),
     exitCode: Schema.optional(Schema.NullOr(Schema.Number)),
-    finalOffset: Schema.Number,
   }),
   Schema.Struct({ type: Schema.Literal("title_changed"), title: Schema.String }),
   Schema.Struct({ type: Schema.Literal("foreground_process_changed"), process: Schema.NullOr(Schema.String) }),

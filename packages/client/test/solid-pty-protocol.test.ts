@@ -19,66 +19,59 @@ const info = {
 const decode = (value: object) => Option.getOrUndefined(decodePersistentPtyMessage(JSON.stringify(value)))
 
 describe("decodePersistentPtyMessage", () => {
-  test("decodes every message the server sends", () => {
-    const messages = [
-      {
-        type: "attached",
-        inputProtocol: 1,
-        info: { size: info.size },
-        role: "controller",
-        generation: 3,
-        replay: { requestedOffset: 128, availableOffset: 0, endOffset: 256, truncated: false },
-      },
-      { type: "replay_complete", endOffset: 256 },
-      { type: "resized", cols: 100, rows: 30, generation: 4, checkpoint: "G2M=" },
-      { type: "controller_changed", attachmentID: "attachment-1", generation: 5 },
-      { type: "exited", exitCode: 0, finalOffset: 512 },
+  test("decodes every message the server sends, keeping only the fields clients read", () => {
+    const replay = { requestedOffset: 128, availableOffset: 0, endOffset: 256, truncated: false }
+
+    expect(
+      [
+        { type: "attached", inputProtocol: 1, info, role: "controller", generation: 3, replay },
+        { type: "replay_complete", endOffset: 256 },
+        { type: "resized", cols: 100, rows: 30, generation: 4, checkpoint: "G2M=" },
+        { type: "controller_changed", attachmentID: "attachment-1", generation: 5 },
+        { type: "exited", exitCode: 0, finalOffset: 512 },
+        { type: "title_changed", title: "vim" },
+        { type: "foreground_process_changed", process: "vim" },
+        { type: "foreground_process_changed", process: null },
+      ].map(decode),
+    ).toEqual([
+      { type: "attached", inputProtocol: 1, info: { size: info.size }, role: "controller" },
+      { type: "replay_complete" },
+      { type: "resized", cols: 100, rows: 30, checkpoint: "G2M=" },
+      { type: "controller_changed", attachmentID: "attachment-1" },
+      { type: "exited", exitCode: 0 },
       { type: "title_changed", title: "vim" },
       { type: "foreground_process_changed", process: "vim" },
       { type: "foreground_process_changed", process: null },
-    ]
-
-    expect(messages.map(decode)).toEqual(messages)
+    ])
   })
 
   test("reads only the size from attached terminal info, whatever else the server version sends", () => {
-    const attached = (terminal: object) => ({
-      type: "attached",
-      inputProtocol: 1,
-      info: terminal,
-      role: "controller",
-      generation: 3,
-      replay: { requestedOffset: 128, availableOffset: 0, endOffset: 256, truncated: false },
-    })
+    const attached = (terminal: object) => ({ type: "attached", inputProtocol: 1, info: terminal, role: "controller" })
 
     expect(decode(attached(info))).toEqual(attached({ size: info.size }))
-    expect(decode(attached({ ...info, userTitle: "build" }))).toEqual(attached({ size: info.size }))
+    expect(decode(attached({ ...info, userTitle: "build", sessionID: "dummy" }))).toEqual(attached({ size: info.size }))
     expect(decode(attached({ id: "pty_1" }))).toBeUndefined()
   })
 
-  test("decodes the fields JSON.stringify drops", () => {
-    expect(decode({ type: "controller_changed", generation: 5 })).toEqual({ type: "controller_changed", generation: 5 })
-    expect(decode({ type: "exited", finalOffset: 512 })).toEqual({ type: "exited", finalOffset: 512 })
-
-    const attached = {
+  test("decodes minimal messages and the fields JSON.stringify drops", () => {
+    expect(decode({ type: "attached", info: { size: info.size } })).toEqual({
       type: "attached",
       info: { size: info.size },
-      role: "observer",
-      generation: 3,
-      replay: { requestedOffset: 0, availableOffset: 0, endOffset: 0, truncated: false },
-    }
-    expect(decode(attached)).toEqual(attached)
-
-    const released = { type: "controller_changed", attachmentID: null, generation: 5 }
-    expect(decode(released)).toEqual(released)
-    const exited = { type: "exited", exitCode: null, finalOffset: 512 }
-    expect(decode(exited)).toEqual(exited)
+    })
+    expect(decode({ type: "replay_complete" })).toEqual({ type: "replay_complete" })
+    expect(decode({ type: "controller_changed", generation: 5 })).toEqual({ type: "controller_changed" })
+    expect(decode({ type: "controller_changed", attachmentID: null })).toEqual({
+      type: "controller_changed",
+      attachmentID: null,
+    })
+    expect(decode({ type: "exited", finalOffset: 512 })).toEqual({ type: "exited" })
+    expect(decode({ type: "exited", exitCode: null })).toEqual({ type: "exited", exitCode: null })
   })
 
   test("ignores fields it does not know", () => {
-    expect(decode({ type: "replay_complete", endOffset: 1, extra: true })).toEqual({
-      type: "replay_complete",
-      endOffset: 1,
+    expect(decode({ type: "title_changed", title: "vim", extra: true })).toEqual({
+      type: "title_changed",
+      title: "vim",
     })
   })
 
