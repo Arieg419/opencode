@@ -36,6 +36,9 @@ export const makeSchedule = Effect.gen(function* () {
             Effect.fail(new InvalidRequestError({ message: error.message, kind: "schedule" })),
           "Schedule.DisabledError": () => Effect.fail(disabled()),
           "Session.NotFoundError": (error) => Effect.fail(missingSession(error)),
+          // A condition's allowlisted tools are approved at creation; a deny or a rejection refuses the schedule.
+          "Permission.BlockedError": (error) => Effect.fail(new ForbiddenError({ message: error.message })),
+          "Permission.CorrectedError": (error) => Effect.fail(new ForbiddenError({ message: error.feedback })),
         }),
       ),
     list: (sessionID: Session.ID) =>
