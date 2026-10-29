@@ -14,6 +14,7 @@ import { SessionInboxTable, SessionTable } from "@opencode/core/session/sql"
 import { LayerNode } from "@opencode/util/effect/layer-node"
 import { eq } from "drizzle-orm"
 import { Cause, Deferred, Effect, Exit, Fiber, References, Scope } from "effect"
+import { TestClock } from "effect/testing"
 import { testEffect } from "./lib/effect"
 
 const it = testEffect(AppNodeBuilder.build(LayerNode.group([Database.node, Job.node, KV.node])))
@@ -609,6 +610,157 @@ describe("Job", () => {
       yield* Deferred.await(interrupted).pipe(Effect.timeout("1 second"))
       // The abandoned in-memory registry is not a durable observation channel.
       expect((yield* jobs.get(job.id))?.status).toBe("running")
+    }),
+  )
+
+  it.effect("auto-backgrounds after yield_after and delivers settlement even after caller scope closes", () =>
+    Effect.gen(function* () {
+      const jobs = yield* Job.Service
+      const sessionID = SessionSchema.ID.make("ses_yield_after")
+      const callerScope = yield* Scope.make()
+      const latch = yield* Deferred.make<void>()
+      const delivered = yield* Deferred.make<Job.Info<{ exit: number }>>()
+      let live = "step 1"
+
+      const job = yield* jobs
+        .start<{ exit: number }>({
+          id: "job_yield_after",
+          sessionID,
+          type: "shell",
+          title: "slow build",
+          recovery: {
+            kind: "shell",
+            sessionID,
+            shellID: "job_yield_after",
+            command: "slow build",
+          },
+          run: Deferred.await(latch).pipe(Effect.as({ output: "step 1\nstep 2", value: { exit: 0 } })),
+          output: Effect.sync(() => live),
+          onSettle: (info) => Deferred.succeed(delivered, info).pipe(Effect.asVoid),
+        })
+        .pipe(Scope.provide(callerScope))
+
+      const blocked = yield* jobs
+        .block<{ exit: number }>({ id: job.id, sessionID, yield_after: 5_000 })
+        .pipe(Effect.forkChild({ startImmediately: true }))
+
+      yield* Effect.yieldNow
+      expect(Array.from(yield* jobs.activeSessions)).toContain(sessionID)
+      yield* TestClock.adjust("4999 millis")
+      expect(blocked.pollUnsafe()).toBeUndefined()
+
+      yield* TestClock.adjust("1 millis")
+      const yielded = yield* Fiber.join(blocked)
+      expect(yielded).toMatchObject({ type: "backgrounded", info: { id: job.id, status: "running" } })
+      expect(yield* jobs.read(job.id)).toMatchObject({ id: job.id, status: "running", output: "step 1" })
+
+      // Simulate plugin/location reload closing the scope that started the job.
+      yield* Scope.close(callerScope, Exit.void)
+      live = "step 1\nnearly done"
+      expect(yield* jobs.read(job.id)).toMatchObject({ output: "step 1\nnearly done" })
+
+      yield* Deferred.succeed(latch, undefined)
+      const finalInfo = yield* Deferred.await(delivered)
+      expect(finalInfo).toMatchObject({
+        id: job.id,
+        status: "completed",
+        output: "step 1\nstep 2",
+        value: { exit: 0 },
+      })
+      yield* jobs.awaitSessionBackground(sessionID)
+      expect(Array.from(yield* jobs.activeSessions)).not.toContain(sessionID)
+    }),
+  )
+
+  it.effect("captures output so far before running stop when cancelling a running job", () =>
+    Effect.gen(function* () {
+      const jobs = yield* Job.Service
+      const sessionID = SessionSchema.ID.make("ses_stop_job")
+      let buffer: string | undefined = "partial output before stop"
+      let stopped = false
+
+      const job = yield* jobs.start({
+        id: "job_stoppable",
+        sessionID,
+        type: "shell",
+        run: Effect.never,
+        output: Effect.sync(() => buffer),
+        stop: Effect.sync(() => {
+          stopped = true
+          buffer = undefined
+        }),
+      })
+      yield* jobs.background(job.id)
+      expect(Array.from(yield* jobs.activeSessions)).toContain(sessionID)
+
+      const cancelled = yield* jobs.cancel(job.id)
+      expect(stopped).toBe(true)
+      expect(cancelled).toMatchObject({
+        id: job.id,
+        status: "cancelled",
+        output: "partial output before stop",
+      })
+      expect(Array.from(yield* jobs.activeSessions)).not.toContain(sessionID)
+    }),
+  )
+
+  it.live("delivers once via background notice when completion races yield_after after isBackgrounded commits", () =>
+    Effect.gen(function* () {
+      const baseKv = yield* KV.Service
+      const sessionID = SessionSchema.ID.make("ses_yield_race")
+      const finishJob = yield* Deferred.make<string>()
+      const settledNotice = yield* Deferred.make<string>()
+      const deliveries: string[] = []
+
+      const kv = KV.Service.of({
+        ...baseKv,
+        set: (key, value) =>
+          Effect.gen(function* () {
+            yield* baseKv.set(key, value)
+            if (typeof value === "object" && value !== null && "status" in value && value.status === "running") {
+              // Complete `run` while `yieldRunning` has committed `isBackgrounded` in `state.jobs`
+              // but before `yieldRunning` resolves `job.backgrounded`, so `done` wins `raceFirst`.
+              yield* Deferred.succeed(finishJob, "settled-during-yield")
+              yield* Effect.yieldNow
+            }
+          }),
+      })
+      const jobs = yield* Job.make.pipe(Effect.provideService(KV.Service, kv))
+      const recovery = {
+        kind: "shell" as const,
+        sessionID,
+        shellID: "shell_yield_race",
+        command: "printf done",
+      }
+      const started = yield* jobs.start({
+        id: recovery.shellID,
+        sessionID,
+        type: "shell",
+        recovery,
+        run: Deferred.await(finishJob),
+        onSettle: (info) =>
+          Effect.sync(() => {
+            deliveries.push(`background:${info.output}`)
+          }).pipe(Effect.andThen(Deferred.succeed(settledNotice, info.output ?? "")), Effect.asVoid),
+      })
+
+      const blocking = yield* jobs
+        .block({ id: started.id, sessionID, yield_after: 1 })
+        .pipe(Effect.provideService(References.MaxOpsBeforeYield, 5), Effect.timeout("2 seconds"), Effect.forkChild)
+      const outcome = yield* Fiber.join(blocking)
+      if (outcome?.type === "finished") deliveries.push(`inline:${outcome.info.output}`)
+
+      yield* Deferred.await(settledNotice).pipe(Effect.timeout("2 seconds"))
+      yield* jobs.awaitSessionBackground(sessionID)
+
+      expect(outcome?.type).toBe("backgrounded")
+      expect(deliveries).toEqual(["background:settled-during-yield"])
+      expect((yield* jobs.pendingBackground).find((item) => item.id === started.id)).toBeUndefined()
+      expect(yield* jobs.read(started.id)).toMatchObject({
+        id: started.id,
+        status: "completed",
+        output: "settled-during-yield",
+      })
     }),
   )
 })
