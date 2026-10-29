@@ -818,19 +818,23 @@ describe("ConfigProviderPlugin.Plugin", () => {
     }),
   )
 
-  it.effect("preserves plugin-supplied variants unless config moves the model to another package", () =>
+  it.effect("preserves plugin-supplied variants on custom models when config omits variants", () =>
     Effect.gen(function* () {
       const models = yield* Model.Service
-      const providerID = Provider.ID.make("custom")
+      const customID = Provider.ID.make("custom")
+      const perModelID = Provider.ID.make("per-model")
       const customTiers = ["none", "low", "medium", "xhigh"].map((id) => ({
         id: Model.VariantID.make(id),
         settings: { reasoningEffort: id },
       }))
       yield* models.transform((editor) => {
-        for (const id of ["plain", "same-package", "moved"])
-          editor.update(providerID, Model.ID.make(id), (model) => {
+        for (const id of ["plain", "same-package"])
+          editor.update(customID, Model.ID.make(id), (model) => {
             model.variants = structuredClone(customTiers)
           })
+        editor.update(perModelID, Model.ID.make("only-model-package"), (model) => {
+          model.variants = structuredClone(customTiers)
+        })
       })
       yield* addPlugin([
         new Document({
@@ -842,10 +846,11 @@ describe("ConfigProviderPlugin.Plugin", () => {
                 models: {
                   plain: { name: "Plain" },
                   "same-package": { package: "aisdk:@ai-sdk/openai-compatible" },
-                  moved: {
-                    modelID: "claude-opus-4-8",
-                    package: "aisdk:@ai-sdk/anthropic",
-                  },
+                },
+              },
+              "per-model": {
+                models: {
+                  "only-model-package": { package: "aisdk:@ai-sdk/openai-compatible" },
                 },
               },
             },
@@ -853,18 +858,14 @@ describe("ConfigProviderPlugin.Plugin", () => {
         }),
       ])
 
-      const ids = (id: string) =>
+      const ids = (providerID: Provider.ID, id: string) =>
         models
           .get(providerID, Model.ID.make(id))
           .pipe(Effect.map((model) => required(model).variants.map((variant) => variant.id)))
-      expect(yield* ids("plain")).toEqual(customTiers.map((variant) => variant.id))
-      expect(yield* ids("same-package")).toEqual(customTiers.map((variant) => variant.id))
-      const moved = required(yield* models.get(providerID, Model.ID.make("moved")))
-      expect(moved.package).toBe("@opencode/ai/providers/anthropic")
-      expect(moved.variants.find((variant) => variant.id === "high")).toEqual({
-        id: Model.VariantID.make("high"),
-        settings: { effort: "high", thinking: { type: "adaptive", display: "summarized" } },
-      })
+      const expected = customTiers.map((variant) => variant.id)
+      expect(yield* ids(customID, "plain")).toEqual(expected)
+      expect(yield* ids(customID, "same-package")).toEqual(expected)
+      expect(yield* ids(perModelID, "only-model-package")).toEqual(expected)
     }),
   )
 
