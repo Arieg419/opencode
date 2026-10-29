@@ -272,9 +272,17 @@ test("migrates custom V1 thinkingOpacity across default and new designs", () => 
     }
   }
 
-  const invalid = structuredClone(opencodeV1)
-  invalid.theme.thinkingOpacity = 1.5
-  expect(() => migrateV1(invalid)).toThrow("Invalid V1 thinkingOpacity")
+  const above = structuredClone(opencodeV1)
+  above.theme.thinkingOpacity = 1.5
+  expect(resolveThemeDocument(migrateV1(above), "dark").thinkingOpacity).toBe(1)
+
+  const below = structuredClone(opencodeV1)
+  below.theme.thinkingOpacity = -0.2
+  expect(resolveThemeDocument(migrateV1(below), "dark").thinkingOpacity).toBe(0)
+
+  const nonNumber = structuredClone(opencodeV1)
+  ;(nonNumber.theme as Record<string, unknown>).thinkingOpacity = "high"
+  expect(resolveThemeDocument(migrateV1(nonNumber), "dark").thinkingOpacity).toBe(0.6)
 })
 
 test("collapses identical V1 backgrounds when both variants infer one mode", () => {

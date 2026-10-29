@@ -381,14 +381,8 @@ export function resolveV1(theme: ThemeV1Json, mode: "dark" | "light"): Theme {
     ? resolveColor(theme.theme.backgroundMenu)
     : resolved.backgroundElement
 
-  const thinkingOpacity = theme.theme.thinkingOpacity ?? 0.6
-  if (
-    typeof thinkingOpacity !== "number" ||
-    !Number.isFinite(thinkingOpacity) ||
-    thinkingOpacity < 0 ||
-    thinkingOpacity > 1
-  )
-    throw new Error("Invalid V1 thinkingOpacity")
+  const raw = theme.theme.thinkingOpacity
+  const thinkingOpacity = typeof raw === "number" && Number.isFinite(raw) ? Math.min(1, Math.max(0, raw)) : 0.6
 
   return {
     ...resolved,

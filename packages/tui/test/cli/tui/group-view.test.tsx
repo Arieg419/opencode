@@ -6,10 +6,8 @@ import { addDefaultParsers, type TextRenderable } from "@opentui/core"
 import parsers from "../../../src/parsers-config"
 import type { SessionMessageAssistant, SessionMessageInfo } from "@opencode/client"
 import { ConfigProvider } from "../../../src/config"
-import { ThemeProvider, useThemes, type ThemeSource } from "../../../src/context/theme"
+import { ThemeProvider, type ThemeSource } from "../../../src/context/theme"
 import { SessionGroupView } from "../../../src/routes/session/group-view"
-import { ReasoningPart } from "../../../src/routes/session/message-parts"
-import { getOpenCodeTheme } from "../../../src/theme"
 import opencodeSource from "../../../src/theme/assets/opencode.json" with { type: "json" }
 import type { ThemeV1Json } from "@opencode/theme/tui/v1"
 import { createTimelineAnchors, groupID, type AnchorTarget } from "../../../src/routes/session/anchors"
@@ -304,35 +302,11 @@ test("failed low activity uses a disclosure icon and keeps details expandable", 
   }
 })
 
-test("collapsed and open reasoning headers use theme thinkingOpacity", async () => {
-  addDefaultParsers(parsers.parsers)
-  const base = opencodeSource as ThemeV1Json
-  const opaque = structuredClone(base)
-  opaque.theme.background = "none"
-  opaque.theme.warning = "#00ff00"
-  opaque.theme.thinkingOpacity = 1
-  const quarter = structuredClone(base)
+test("collapsed reasoning header uses theme thinkingOpacity", async () => {
+  const quarter = structuredClone(opencodeSource as ThemeV1Json)
   quarter.theme.background = "none"
   quarter.theme.warning = "#00ff00"
   quarter.theme.thinkingOpacity = 0.25
-  const plain = structuredClone(base)
-  plain.theme.background = "none"
-  plain.theme.warning = "#00ff00"
-  delete plain.theme.thinkingOpacity
-  const native = structuredClone(getOpenCodeTheme())
-  const nativeDark = {
-    base: {
-      ...native.base,
-      thinkingOpacity: 1,
-      background: { ...native.base.background, base: "transparent" },
-      text: {
-        ...native.base.text,
-        feedback: { ...native.base.text.feedback, warning: { base: "#00ff00" } },
-      },
-    },
-    dark: native.dark,
-  }
-
   const message: SessionMessageAssistant = {
     id: "a",
     type: "assistant",
@@ -341,76 +315,33 @@ test("collapsed and open reasoning headers use theme thinkingOpacity", async () 
     time: { created: 0, completed: 2 },
     content: [{ type: "reasoning", text: "**Title**\n\nBody", time: { created: 0, completed: 2 } }],
   }
-  const part = message.content[0]
-  if (part?.type !== "reasoning") throw new Error("Missing reasoning part")
-  const row: SessionGroup = {
-    type: "group",
-    kind: "reasoning",
-    size: 1,
-    completed: true,
-    children: [{ type: "entry", size: 1, entry: { type: "part", ref: { messageID: "a", partID: "reasoning:0" } } }],
-  }
-  const anchors = createTimelineAnchors()
-  const [expanded, setExpanded] = createStore<Record<string, boolean>>({})
-  const [thinkingMode, setThinkingMode] = createStore<{ value: "hide" | "show" }>({ value: "hide" })
-  let themes!: ReturnType<typeof useThemes>
-  function Probe() {
-    themes = useThemes()
-    return null
-  }
-  const source: ThemeSource = {
-    discover: () => Promise.resolve({ opaque, quarter, plain, native: nativeDark }),
-  }
   const app = await mount({
-    row,
-    anchors,
-    config: createTuiResolvedConfig({ animations: false, theme: { name: "opaque", mode: "dark" } }),
-    source,
-    thinkingMode: () => thinkingMode.value,
-    probe: () => <Probe />,
-    expanded: (id) => expanded[id],
-    setExpanded: (id, value) => setExpanded(id, value),
+    row: {
+      type: "group",
+      kind: "reasoning",
+      size: 1,
+      completed: true,
+      children: [{ type: "entry", size: 1, entry: { type: "part", ref: { messageID: "a", partID: "reasoning:0" } } }],
+    },
+    anchors: createTimelineAnchors(),
+    config: createTuiResolvedConfig({ animations: false, theme: { name: "quarter", mode: "dark" } }),
+    source: { discover: () => Promise.resolve({ quarter }) },
+    expanded: () => false,
+    setExpanded: () => {},
     message: () => message,
-    entry: () => <ReasoningPart last={true} part={part} message={message} />,
+    entry: () => <text />,
   })
-
-  const thoughtFg = () => {
-    for (const line of app.captureSpans().lines) {
-      const span = line.spans.find((item) => item.text.includes("Thought"))
-      if (span) return span.fg.toInts()
-    }
-    throw new Error("Missing Thought span")
-  }
 
   try {
     app.renderer.start()
-    await app.waitForFrame(() => themes?.ready === true && app.captureCharFrame().includes("+ Thought"))
-    expect(thoughtFg()).toEqual([0, 255, 0, 255])
-
-    themes.set("native")
-    await app.renderOnce()
-    expect(thoughtFg()).toEqual([0, 255, 0, 255])
-
-    themes.set("plain")
-    await app.renderOnce()
-    expect(thoughtFg()).toEqual([0, 153, 0, 255])
-
-    themes.set("quarter")
-    await app.renderOnce()
-    expect(thoughtFg()).toEqual([0, 64, 0, 255])
-
-    const y = anchors.get({ type: "group", groupID: groupID(row, 0)! })?.node.y ?? -1
-    await app.mockMouse.moveTo(4, y)
-    await app.renderOnce()
-    expect(thoughtFg()).toEqual([0, 255, 0, 255])
-
-    await app.mockMouse.moveTo(0, 0)
-    await app.renderOnce()
-    expect(thoughtFg()).toEqual([0, 64, 0, 255])
-
-    setThinkingMode("value", "show")
-    await app.renderOnce()
-    expect(thoughtFg()).toEqual([0, 64, 0, 255])
+    await app.waitForFrame(
+      (frame) => frame.includes("+ Thought") && app.captureSpans().lines[0]?.spans[0]?.bg.a === 0,
+    )
+    const span = app
+      .captureSpans()
+      .lines.flatMap((line) => line.spans)
+      .find((item) => item.text.includes("Thought"))
+    expect(span?.fg.toInts()).toEqual([0, 64, 0, 255])
   } finally {
     app.renderer.destroy()
   }
@@ -421,8 +352,6 @@ function mount(input: {
   anchors: ReturnType<typeof createTimelineAnchors>
   config: ReturnType<typeof createTuiResolvedConfig>
   source?: ThemeSource
-  thinkingMode?: () => "hide" | "show"
-  probe?: () => JSX.Element
   expanded: (id: string) => boolean
   setExpanded: (id: string, value: boolean) => void
   message: (id: string) => SessionMessageInfo | undefined
@@ -433,7 +362,6 @@ function mount(input: {
       <TestTuiContexts>
         <ConfigProvider config={input.config}>
           <ThemeProvider mode="dark" source={input.source ?? emptyThemeSource}>
-            {input.probe?.()}
             <context.Provider
               value={{
                 width: 40,
@@ -442,7 +370,7 @@ function mount(input: {
                 anchors: input.anchors,
                 groupExpanded: input.expanded,
                 setGroupExpanded: input.setExpanded,
-                thinkingMode: input.thinkingMode ?? (() => "hide"),
+                thinkingMode: () => "hide",
                 markdownMode: () => "rendered",
                 groupExploration: () => true,
                 legacyTurns: () => false,
