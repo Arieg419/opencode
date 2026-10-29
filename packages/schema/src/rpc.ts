@@ -11,16 +11,16 @@ export type ErrorMap = Readonly<Record<string, Tool.ValueSchema>> & {
 }
 
 export interface Method {
-  readonly input: Tool.ValueSchema
-  readonly output: Tool.ValueSchema
+  readonly input?: Tool.ValueSchema
+  readonly output?: Tool.ValueSchema
   readonly errors?: ErrorMap
 }
 
 export type PortableValueSchema = StandardSchemaV1<unknown, unknown> | JsonSchema.JsonSchema
 
 export interface PortableMethod extends Method {
-  readonly input: PortableValueSchema
-  readonly output: PortableValueSchema
+  readonly input?: PortableValueSchema
+  readonly output?: PortableValueSchema
   readonly errors?: Readonly<Record<string, PortableValueSchema>> & {
     readonly [Name in `rpc.${string}`]?: never
   }
@@ -59,20 +59,34 @@ export function define<const D extends Definition>(definition: D) {
   return definition
 }
 
-export type Input<S extends Tool.ValueSchema> = S extends Schema.Top
-  ? S["Encoded"]
-  : S extends StandardSchemaV1
-    ? StandardSchemaV1.InferInput<S>
-    : unknown
+// A method that leaves out a schema neither accepts nor returns a value on that side.
+export type InputSchema<M extends Method> = M extends { readonly input: infer S extends Tool.ValueSchema } ? S : undefined
+export type OutputSchema<M extends Method> = M extends { readonly output: infer S extends Tool.ValueSchema }
+  ? S
+  : undefined
 
-export type Output<S extends Tool.ValueSchema> = S extends Schema.Top
-  ? S["Type"]
-  : S extends StandardSchemaV1
-    ? StandardSchemaV1.InferOutput<S>
-    : unknown
+export type Input<S extends Tool.ValueSchema | undefined> = S extends undefined
+  ? undefined
+  : S extends Schema.Top
+    ? S["Encoded"]
+    : S extends StandardSchemaV1
+      ? StandardSchemaV1.InferInput<S>
+      : unknown
+
+export type Output<S extends Tool.ValueSchema | undefined> = S extends undefined
+  ? undefined
+  : S extends Schema.Top
+    ? S["Type"]
+    : S extends StandardSchemaV1
+      ? StandardSchemaV1.InferOutput<S>
+      : unknown
 
 // Effect codecs encode handler results; Standard Schema parses them forward.
-export type HandlerOutput<S extends Tool.ValueSchema> = S extends Schema.Top ? Output<S> : Input<S>
+export type HandlerOutput<S extends Tool.ValueSchema | undefined> = S extends undefined
+  ? void
+  : S extends Schema.Top
+    ? Output<S>
+    : Input<S>
 
 type MethodErrors<M extends Method> = M extends {
   readonly errors: infer Errors extends ErrorMap

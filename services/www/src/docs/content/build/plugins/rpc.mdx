@@ -87,6 +87,17 @@ search: {
 }
 ```
 
+A method without `input` is called with no argument, and its handler receives
+`undefined`. A method without `output` resolves to `undefined`, and whatever its
+handler returns is dropped.
+
+```ts
+refresh: {
+  output: { type: "object" },
+},
+clear: {},
+```
+
 JSON Schema values are `unknown` in TypeScript, so narrow them before use.
 Standard Schema infers the input and output types.
 

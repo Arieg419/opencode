@@ -199,7 +199,9 @@ export function eventDefinition(type: `rpc.${string}`): Event.Definition {
   ) satisfies Event.EphemeralDefinition<string, typeof data>
 }
 
-function parse(schema: Tool.ValueSchema, value: unknown): Effect.Effect<unknown, unknown> {
+function parse(schema: Tool.ValueSchema | undefined, value: unknown): Effect.Effect<unknown, unknown> {
+  // A side without a schema carries no value: drop whatever was sent instead of passing it on unvalidated.
+  if (schema === undefined) return Effect.succeed(undefined)
   if (Schema.isSchema(schema)) return Schema.decodeUnknownEffect(schema)(value)
   if (isStandardSchema(schema)) {
     return Effect.gen(function* () {
@@ -224,7 +226,7 @@ function parse(schema: Tool.ValueSchema, value: unknown): Effect.Effect<unknown,
   }).pipe(Effect.flatMap((codec) => Schema.decodeUnknownEffect(codec)(value)))
 }
 
-function encode(schema: Tool.ValueSchema, value: unknown): Effect.Effect<unknown, unknown> {
+function encode(schema: Tool.ValueSchema | undefined, value: unknown): Effect.Effect<unknown, unknown> {
   return Schema.isSchema(schema) ? Schema.encodeUnknownEffect(schema)(value) : parse(schema, value)
 }
 
@@ -261,7 +263,8 @@ function isStandardSchema(schema: Tool.ValueSchema): schema is Extract<Tool.Valu
   return "~standard" in schema
 }
 
-function read(schema: Tool.ValueSchema, value: unknown): Effect.Effect<unknown, unknown> {
+function read(schema: Tool.ValueSchema | undefined, value: unknown): Effect.Effect<unknown, unknown> {
+  if (schema === undefined) return Effect.succeed(undefined)
   // Standard Schema results were already parsed by the publisher; don't apply transforms twice.
   return Schema.isSchema(schema) ? Schema.decodeUnknownEffect(schema)(value) : Effect.succeed(value)
 }

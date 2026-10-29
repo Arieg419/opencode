@@ -8,6 +8,7 @@ import { Effect, Schema } from "effect"
 type RpcEvent = Extract<OpenCodeEvent, { type: `rpc.${string}` }>
 
 export function read(schema: Rpc.Method["output"], value: unknown) {
+  if (schema === undefined) return Effect.succeed(undefined)
   // Standard Schema results have already been parsed by the server.
   return Schema.isSchema(schema) ? Schema.decodeUnknownEffect(schema)(value) : Effect.succeed(value)
 }
