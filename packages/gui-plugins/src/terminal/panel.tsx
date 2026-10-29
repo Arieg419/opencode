@@ -26,6 +26,8 @@ type CachedTerminalSurface = {
   key: string
   session: string
   id: string
+  // The connection ended. Like the TUI, a terminal doesn't reconnect; showing it again mounts it anew.
+  failed?: boolean
   // An accessor, so the store never wraps the host's server ref.
   server: () => ServerRef
 }
@@ -141,11 +143,13 @@ export default function TerminalPanel(props: {
 
       const ids = new Set(current.terminals.map((info) => info.id))
 
-      const surfaces = store.surfaces.filter(
-        (surface) => surface.session !== current.session || (ids.has(surface.id) && !current.elsewhere.has(surface.id)),
-      )
-
       const key = current.active ? `${current.session}\0${current.active}` : undefined
+
+      const surfaces = store.surfaces.filter(
+        (surface) =>
+          !(surface.failed && surface.key !== key) &&
+          (surface.session !== current.session || (ids.has(surface.id) && !current.elsewhere.has(surface.id))),
+      )
 
       if (current.active && key && !surfaces.some((surface) => surface.key === key)) {
         surfaces.push({ key, session: current.session, id: current.active, server: terminal().server })
@@ -189,6 +193,13 @@ export default function TerminalPanel(props: {
               onAutoFocus={() => {
                 focusTerminalById(surface.id)
                 terminal().consumeFocus(surface.id)
+              }}
+              onFailure={() => {
+                const shown = opened() && surface.session === terminal().key && surface.id === active()
+
+                if (shown) return setStore("surfaces", (item) => item.key === surface.key, "failed", true)
+
+                setStore("surfaces", (list) => list.filter((item) => item.key !== surface.key))
               }}
               class="!px-[14px]"
             />

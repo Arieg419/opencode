@@ -1,8 +1,16 @@
-import { createEffect, createRoot, getOwner, runWithOwner } from "solid-js"
+import { createRoot, getOwner, runWithOwner } from "solid-js"
 import { createStore } from "solid-js/store"
 import { Predicate, Schema } from "effect"
 import { ClientError, type PersistentPtyInfo } from "@opencode/client"
-import type { Layout, Persisted, ServerRef, SessionRef, Storage, Toasts } from "@opencode/plugin/gui"
+import {
+  createKeyed,
+  type Layout,
+  type Persisted,
+  type ServerRef,
+  type SessionRef,
+  type Storage,
+  type Toasts,
+} from "@opencode/plugin/gui"
 import { defaultTitle, titleNumber } from "./title"
 
 // The keys terminals were stored under before they lived on the server. Their PTY ids no longer exist anywhere.
@@ -113,7 +121,9 @@ export function createTerminalModel(input: {
       if (session && state.capabilities[server.id]) refreshQuietly(session)
     }
 
-    const stops = [
+    // Subscriptions end with the owner they start under, and this runs from whichever computation first read the
+    // server, so they belong to the model.
+    const stops = runWithOwner(owner, () => [
       // The event stream opens with server.connected, so this runs for the first connection and every reconnect.
       data.on("server.connected", () => sync(server)),
       data.on("persistent-pty.added", (event) => refreshSession(event.data.sessionID)),
@@ -121,7 +131,7 @@ export function createTerminalModel(input: {
       data.listen((event) => {
         if (event.name === UPDATED && state.capabilities[server.id]) refreshServer(server)
       }),
-    ]
+    ])!
 
     watched.set(server.id, { data, stop: () => stops.forEach((stop) => stop()) })
     sync(server)
@@ -335,12 +345,13 @@ function settled(session: SessionRef) {
 
   return new Promise<void>((resolve) =>
     createRoot((dispose) =>
-      createEffect(() => {
-        if (session.pending) return
-
-        dispose()
-        resolve()
-      }),
+      createKeyed(
+        () => !session.pending,
+        () => {
+          dispose()
+          resolve()
+        },
+      ),
     ),
   )
 }
