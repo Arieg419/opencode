@@ -20,7 +20,10 @@ export interface Interface {
    * top-level sessions are capped: a held nested child could otherwise wait on its own ancestor.
    */
   readonly limit: (parent: SessionSchema.Info) => Effect.Effect<number | undefined>
-  /** Runs `effect` in a free slot, waiting in server-wide FIFO order, and frees the slot when it ends. */
+  /**
+   * Runs `effect` once fewer than `limit` held effects run across the server, waiting in FIFO order
+   * among waiters with the same limit, and frees the slot when it ends.
+   */
   readonly hold: <A, E, R>(input: HoldInput, effect: Effect.Effect<A, E, R>) => Effect.Effect<A, E, R>
 }
 
@@ -34,11 +37,18 @@ const make = Effect.gen(function* () {
   const waiting: Waiter[] = []
 
   // Synchronous bookkeeping first, so the slot count never depends on when the deferreds resolve.
+  // Each waiter starts once fewer than its own cap are running, so a small cap at the front never
+  // blocks a larger one behind it; waiters with the same cap still start in order.
   const wake = Effect.suspend(() => {
     const woken: Waiter[] = []
-    while (waiting.length > 0 && running < waiting[0]!.limit) {
+    let index = 0
+    while (index < waiting.length) {
+      if (running >= waiting[index]!.limit) {
+        index++
+        continue
+      }
       running++
-      woken.push(waiting.shift()!)
+      woken.push(...waiting.splice(index, 1))
     }
     return Effect.forEach(woken, (waiter) => Deferred.succeed(waiter.ready, undefined), { discard: true })
   })
@@ -72,7 +82,8 @@ const make = Effect.gen(function* () {
     Effect.uninterruptibleMask((restore) =>
       Effect.gen(function* () {
         const waiter: Waiter = { limit: input.limit, ready: yield* Deferred.make<void>() }
-        if (waiting.length === 0 && running < input.limit) running++
+        // After every wake no waiter fits under its cap, so starting now never passes one with the same cap.
+        if (running < input.limit) running++
         else {
           waiting.push(waiter)
           if (input.queued) yield* input.queued(waiting.length - 1)

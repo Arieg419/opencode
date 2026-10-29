@@ -1,5 +1,5 @@
 import { describe, expect } from "bun:test"
-import { Effect, Fiber, Layer, Schedule, Schema } from "effect"
+import { Deferred, Effect, Fiber, Layer, Schedule, Schema } from "effect"
 import path from "path"
 import { Money } from "@opencode/schema/money"
 import { AppNodeBuilder } from "@opencode/core/effect/app-node-builder"
@@ -124,6 +124,7 @@ const it = testEffect(
       SessionExecution.node,
       LocationServiceMap.node,
       SessionRestart.node,
+      SubagentQueue.node,
       KV.node,
     ]),
     [
@@ -190,6 +191,24 @@ const setup = (experimental: Record<string, number>) =>
   })
 
 describe("SubagentQueue", () => {
+  it.live("a waiter with a small cap never blocks one with a larger cap behind it", () =>
+    Effect.gen(function* () {
+      const queue = yield* SubagentQueue.Service
+      const release = yield* Deferred.make<void>()
+      const order: string[] = []
+      const hold = (name: string, limit: number) =>
+        queue
+          .hold({ limit }, Effect.sync(() => order.push(name)).pipe(Effect.andThen(Deferred.await(release))))
+          .pipe(Effect.forkChild({ startImmediately: true }))
+      const fibers = [yield* hold("a", 1), yield* hold("b", 1), yield* hold("c", 3)]
+      yield* until(() => order.length === 2)
+      expect(order).toEqual(["a", "c"])
+      yield* Deferred.succeed(release, undefined)
+      yield* Effect.forEach(fibers, Fiber.join)
+      expect(order).toEqual(["a", "c", "b"])
+    }),
+  )
+
   it.live("holds new subagents past the cap and starts them in FIFO order", () =>
     Effect.gen(function* () {
       const { background } = yield* setup({ subagent_concurrency: 2 })
