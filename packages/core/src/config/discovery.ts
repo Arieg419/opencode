@@ -56,6 +56,14 @@ export function stripPreferenceMetadata(json: string) {
   return JSON.stringify(Object.fromEntries(Object.entries(parsed).filter(([key]) => !preferenceMetadata.has(key))))
 }
 
+/** The deployed macOS managed preferences plist for the current user, if any. */
+export const preferences = Effect.fnUntraced(function* () {
+  if (process.platform !== "darwin") return
+  const fs = yield* FSUtil.Service
+  const user = yield* Effect.try(() => os.userInfo().username).pipe(Effect.orElseSucceed(() => "user"))
+  return (yield* Effect.filter(preferencePaths(user), fs.isFile)).at(0)
+})
+
 export const discover = Effect.fn("ConfigDiscovery.discover")(function* (options?: Options) {
   const fs = yield* FSUtil.Service
   const global = yield* Global.Service
@@ -107,18 +115,10 @@ export const discover = Effect.fn("ConfigDiscovery.discover")(function* (options
     )
     .map(({ item }) => item)
 
-  // A custom system directory replaces platform discovery, so it also skips host MDM preferences.
-  const preferences =
-    globalEnabled && (options?.system ?? true) === true && process.platform === "darwin"
-      ? (yield* Effect.filter(
-          preferencePaths(yield* Effect.try(() => os.userInfo().username).pipe(Effect.orElseSucceed(() => "user"))),
-          fs.isFile,
-        )).at(0)
-      : undefined
-
   return {
     system: globalEnabled && system ? { path: system, present: yield* fs.isDir(system) } : undefined,
-    preferences,
+    // A custom system directory replaces platform discovery, so it also skips host MDM preferences.
+    preferences: globalEnabled && (options?.system ?? true) === true ? yield* preferences() : undefined,
     global: globalEnabled ? globalDirectory : undefined,
     explicit: options?.file ? AbsolutePath.make(path.resolve(options.file)) : undefined,
     direct: visible.filter((item) => ![".agents", ".claude", ".opencode"].includes(path.basename(item))).toReversed(),

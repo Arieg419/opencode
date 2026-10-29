@@ -27,6 +27,73 @@ export function latest<K extends keyof Info>(entries: readonly Entry[], key: K):
     ?.info[key]
 }
 
+const decodeInfo = Schema.decodeUnknownOption(Info, { errors: "all", onExcessProperty: "ignore" })
+
+const parseInfo = Effect.fn("Config.parseInfo")(function* (text: string, source: string) {
+  const errors: ParseError[] = []
+  const input: unknown = parse(text, errors, { allowTrailingComma: true })
+  if (errors.length) {
+    yield* Effect.logWarning("configuration normalization diagnostic", {
+      source,
+      path: "$",
+      kind: "invalid",
+      action: "rejected malformed JSON or JSONC document",
+    })
+    return
+  }
+  const result = ConfigNormalize.normalize(input)
+  yield* Effect.forEach(result.diagnostics, (diagnostic) =>
+    Effect.logWarning("configuration normalization diagnostic", {
+      source,
+      path: diagnostic.path[0] === "$" ? "$" : `$.${diagnostic.path.join(".")}`,
+      kind: diagnostic.kind,
+      action: diagnostic.message,
+    }),
+  )
+  if (result.type === "rejected") return
+  const info = Option.getOrUndefined(decodeInfo(result.encoded))
+  if (info) return info
+  yield* Effect.logWarning("configuration normalization diagnostic", {
+    source,
+    path: "$",
+    kind: "invalid",
+    action: "rejected canonical configuration after final validation",
+  })
+})
+
+/** Reads, substitutes, and validates one config file; a missing or invalid file yields `undefined`. */
+export const loadFile = Effect.fnUntraced(function* (filepath: string) {
+  const fs = yield* FSUtil.Service
+  const text = yield* fs.readFileStringSafe(filepath)
+  if (text === undefined) return
+  const substituted = yield* ConfigVariable.substitute({ type: "path", path: filepath, text })
+  const info = yield* parseInfo(substituted, filepath)
+  if (!info) return
+  return new Document({ type: "document", path: AbsolutePath.make(filepath), info })
+})
+
+/** Reads a macOS managed preferences plist as one config document. */
+export const loadPreferences = Effect.fn("Config.loadPreferences")(function* (plist: AbsolutePath) {
+  const processes = yield* AppProcess.Service
+  const result = yield* processes
+    .run(ChildProcess.make("plutil", ["-convert", "json", "-o", "-", plist], { stdin: "ignore" }), {
+      timeout: "10 seconds",
+    })
+    .pipe(Effect.flatMap(AppProcess.requireSuccess), Effect.option)
+  if (Option.isNone(result)) {
+    yield* Effect.logWarning("failed to convert managed preferences", { source: plist })
+    return []
+  }
+  const text = yield* ConfigVariable.substitute({
+    type: "virtual",
+    source: plist,
+    dir: path.dirname(plist),
+    text: ConfigDiscovery.stripPreferenceMetadata(result.value.stdout.toString()),
+  })
+  const info = yield* parseInfo(text, plist)
+  return info ? [new Document({ type: "document", path: plist, info })] : []
+})
+
 export interface Interface {
   /** Returns location config documents and discovery sources from lowest to highest priority. */
   readonly entries: () => Effect.Effect<Entry[]>
@@ -122,54 +189,11 @@ export const layer = (options?: Options) =>
       const credentials = yield* Credential.Service
       const globalService = yield* Global.Service
       const wellknown = yield* WellKnown.Service
-      const processes = yield* AppProcess.Service
       const integrations = new Map<string, ConfigIntegration.Document>()
       // Integrations set their documents from outside this layer, so their reloads run with its services.
-      const context = yield* Effect.context<FSUtil.Service | Global.Service | Location.Service>()
+      const context = yield* Effect.context<FSUtil.Service | Global.Service | Location.Service | AppProcess.Service>()
       const reloadLock = Semaphore.makeUnsafe(1)
       const updateLock = Semaphore.makeUnsafe(1)
-      const decodeOptions = { errors: "all", onExcessProperty: "ignore" } as const
-      const decodeInfo = Schema.decodeUnknownOption(Info, decodeOptions)
-      const parseInfo = Effect.fn("Config.parseInfo")(function* (text: string, source: string) {
-        const errors: ParseError[] = []
-        const input: unknown = parse(text, errors, { allowTrailingComma: true })
-        if (errors.length) {
-          yield* Effect.logWarning("configuration normalization diagnostic", {
-            source,
-            path: "$",
-            kind: "invalid",
-            action: "rejected malformed JSON or JSONC document",
-          })
-          return
-        }
-        const result = ConfigNormalize.normalize(input)
-        yield* Effect.forEach(result.diagnostics, (diagnostic) =>
-          Effect.logWarning("configuration normalization diagnostic", {
-            source,
-            path: diagnostic.path[0] === "$" ? "$" : `$.${diagnostic.path.join(".")}`,
-            kind: diagnostic.kind,
-            action: diagnostic.message,
-          }),
-        )
-        if (result.type === "rejected") return
-        const info = Option.getOrUndefined(decodeInfo(result.encoded))
-        if (info) return info
-        yield* Effect.logWarning("configuration normalization diagnostic", {
-          source,
-          path: "$",
-          kind: "invalid",
-          action: "rejected canonical configuration after final validation",
-        })
-      })
-
-      const loadFile = Effect.fnUntraced(function* (filepath: string) {
-        const text = yield* fs.readFileStringSafe(filepath)
-        if (text === undefined) return
-        const substituted = yield* ConfigVariable.substitute({ type: "path", path: filepath, text })
-        const info = yield* parseInfo(substituted, filepath)
-        if (!info) return
-        return new Document({ type: "document", path: AbsolutePath.make(filepath), info })
-      })
 
       const loadWellknownEntry = Effect.fnUntraced(function* (entry: WellKnown.Entry) {
         const auth = entry.manifest.auth
@@ -209,26 +233,6 @@ export const layer = (options?: Options) =>
             ),
           )
         return yield* Effect.forEach(entries, loadWellknownEntry).pipe(Effect.map((documents) => documents.flat()))
-      })
-
-      const loadPreferences = Effect.fn("Config.loadPreferences")(function* (plist: AbsolutePath) {
-        const result = yield* processes
-          .run(ChildProcess.make("plutil", ["-convert", "json", "-o", "-", plist], { stdin: "ignore" }), {
-            timeout: "10 seconds",
-          })
-          .pipe(Effect.flatMap(AppProcess.requireSuccess), Effect.option)
-        if (Option.isNone(result)) {
-          yield* Effect.logWarning("failed to convert managed preferences", { source: plist })
-          return []
-        }
-        const text = yield* ConfigVariable.substitute({
-          type: "virtual",
-          source: plist,
-          dir: path.dirname(plist),
-          text: ConfigDiscovery.stripPreferenceMetadata(result.value.stdout.toString()),
-        })
-        const info = yield* parseInfo(text, plist)
-        return info ? [new Document({ type: "document", path: plist, info })] : []
       })
 
       const loadDirectory = Effect.fnUntraced(function* (directory: AbsolutePath) {

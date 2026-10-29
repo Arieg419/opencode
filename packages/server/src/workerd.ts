@@ -12,7 +12,9 @@ import { Pty } from "@opencode/core/pty"
 import { Snapshot } from "@opencode/core/snapshot"
 import { Vcs } from "@opencode/core/vcs"
 import { CrossSpawnSpawner } from "@opencode/util/cross-spawn-spawner"
+import { httpClient } from "@opencode/util/effect/app-node-platform"
 import type { LayerNode } from "@opencode/util/effect/layer-node"
+import { FetchHttpClient } from "effect/http"
 import { ServerFetch } from "./fetch"
 import type { ServerOptions } from "./options"
 
@@ -85,6 +87,8 @@ export function replacements(options: Options): LayerNode.Replacements {
     // Precompiled (internal and SDK) plugins only: no plugin-directory scan, npm
     // install, or import of plugin code from disk.
     ConfigPluginSource.node.replace(ConfigPluginSource.empty),
+    // workerd has no machine configuration to read client certificates from, and its fetch cannot present one.
+    httpClient.replace(FetchHttpClient.layer),
   ]
 }
 
