@@ -89,6 +89,7 @@ describe("server event stream", () => {
 test("rotates the HTTP client with the endpoint", async () => {
   const requests: Array<{ url: string; authorization: string | null }> = []
 
+  // SAFETY: the transport only calls fetch with a request and init; `preconnect` and other statics are never read.
   const fetch = (async (input: string | URL | Request, init?: RequestInit) => {
     const request = input instanceof Request ? input : new Request(input, init)
     requests.push({ url: request.url, authorization: request.headers.get("authorization") })

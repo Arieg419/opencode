@@ -2,6 +2,7 @@ import { describe, expect, test } from "bun:test"
 import { createStore, produce } from "solid-js/store"
 import { ClientError, type PersistentPtyInfo } from "@opencode/client"
 import type { Layout, ServerRef, SessionRef, Storage, ToastOptions } from "@opencode/plugin/gui"
+import { PtyFeatureUnsupportedError } from "@opencode/protocol/errors"
 import { createTerminalModel } from "./model"
 
 const flush = () => new Promise((resolve) => setTimeout(resolve, 0))
@@ -25,16 +26,15 @@ const info = (id: string, title: string, sessionID = "ses_1"): PersistentPtyInfo
 function fakeServer(options: { capabilities?: { persistentPty?: boolean } } = {}) {
   const terminals = new Map<string, PersistentPtyInfo[]>()
   const handlers = new Map<string, ((event: { data: EventData }) => void)[]>()
-  const calls = { list: 0, create: [] as unknown[], remove: [] as string[], update: [] as unknown[] }
-  const state = {
-    capabilities: options.capabilities,
-    directory: "/repo",
-    created: 0,
-    createError: undefined as unknown,
-    updateError: undefined as unknown,
-    update: undefined as Promise<void> | undefined,
-    list: undefined as Promise<void> | undefined,
+
+  const calls: FakeCalls = {
+    list: 0,
+    create: [],
+    remove: [],
+    update: [],
   }
+
+  const state: FakeState = { capabilities: options.capabilities, directory: "/repo", created: 0 }
 
   const server = {
     id: "http://server",
@@ -102,6 +102,7 @@ function fakeServer(options: { capabilities?: { persistentPty?: boolean } } = {}
 
   return {
     // SAFETY: the model reads only `id`, `data` (on, session.get) and the client calls stubbed here.
+    // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- see SAFETY above
     ref: server as unknown as ServerRef,
     terminals,
     calls,
@@ -112,13 +113,25 @@ function fakeServer(options: { capabilities?: { persistentPty?: boolean } } = {}
   }
 }
 
+type FakeCalls = { list: number; create: unknown[]; remove: string[]; update: unknown[] }
+
+type FakeState = {
+  capabilities?: { persistentPty?: boolean }
+  directory: string
+  created: number
+  createError?: Error
+  updateError?: Error
+  update?: Promise<void>
+  list?: Promise<void>
+}
+
 type EventData = { sessionID: string; terminal?: PersistentPtyInfo }
 
 function setup(server: ReturnType<typeof fakeServer>) {
   const stored = new Map<string, string[]>()
   const opened: { key: string; session: string; tab?: string }[] = []
   const toasts: ToastOptions[] = []
-  const removed: { key: string; options: unknown }[] = []
+  const removed: { key: string; options: Parameters<Storage["remove"]>[1] }[] = []
 
   const storage = {
     memory<T extends object>(_key: string, options: { initial: T }) {
@@ -138,7 +151,7 @@ function setup(server: ReturnType<typeof fakeServer>) {
         update: () => undefined,
       }
     },
-    remove: (key: string, options: unknown) => void removed.push({ key, options }),
+    remove: (key: string, options: Parameters<Storage["remove"]>[1]) => void removed.push({ key, options }),
   }
 
   const layout: Pick<Layout, "open" | "stored"> = {
@@ -151,6 +164,7 @@ function setup(server: ReturnType<typeof fakeServer>) {
 
   const model = createTerminalModel({
     // SAFETY: the model opens only `memory`, `store` and `remove`, which these stand-ins implement.
+    // oxlint-disable-next-line anti-slop/no-chained-type-assertions -- see SAFETY above
     storage: storage as unknown as Storage,
     layout,
     toast: { show: (options) => (toasts.push(options), { dismiss: () => undefined }) },
@@ -377,10 +391,7 @@ describe("terminal model", () => {
 
   test("tells the user renaming waits for the terminal service to restart and restores the title", async () => {
     const server = fakeServer()
-    server.state.updateError = Object.assign(new Error("rename unsupported"), {
-      _tag: "PtyFeatureUnsupportedError",
-      feature: "rename",
-    })
+    server.state.updateError = new PtyFeatureUnsupportedError({ feature: "rename", message: "rename unsupported" })
     server.terminals.set("ses_1", [info("pty_1", "Terminal 1")])
     const { model, session, toasts } = setup(server)
     const terminal = model.load(session)
