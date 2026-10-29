@@ -1,20 +1,16 @@
 export * as SubagentJob from "./subagent-job.js"
 
-import { and, gte, lt, sql } from "drizzle-orm"
 import { Context, Effect, Layer, Option, Schema, Scope, Stream } from "effect"
 import { Node } from "@opencode/util/effect/app-node"
 import type { LayerNode } from "@opencode/util/effect/layer-node"
 import { Bus } from "../bus.js"
-import { Database } from "../database/database.js"
 import { KeyedMutex } from "../effect/keyed-mutex.js"
 import { Job } from "../job.js"
 import { KV } from "../kv.js"
-import { KVTable } from "../kv/sql.js"
 import { Session } from "../session.js"
 import { SessionEvent } from "./event.js"
 import { SessionMessage } from "./message.js"
 import { SessionSchema } from "./schema.js"
-import { SessionMessageTable, SessionTable } from "./sql.js"
 import { SessionStore } from "./store.js"
 import { SubagentCompletion } from "./subagent-completion.js"
 
@@ -34,13 +30,15 @@ type Marker = typeof Marker.Type
 
 const decodeMarker = Schema.decodeUnknownOption(Marker)
 const markerPrefix = "subagent.parent/"
-const markerPrefixEnd = "subagent.parent0"
 const childIndexPrefix = "subagent.child/"
+const dirtyPrefix = "subagent.dirty/"
 const markerKey = (sessionID: SessionSchema.ID) => `${markerPrefix}${sessionID}`
 const childIndexKey = (parentSessionID: SessionSchema.ID, childSessionID: SessionSchema.ID) =>
   `${childIndexPrefix}${parentSessionID}/${childSessionID}`
+const dirtyKey = (sessionID: SessionSchema.ID) => `${dirtyPrefix}${sessionID}`
 const noticeID = (idleID: SessionMessage.ID) => SessionMessage.ID.make(`${idleID}_subagent`)
 const TURN_PAGE = 50
+const projectedBuses = new WeakSet<Bus.Interface>()
 
 export interface Interface {
   track: (recovery: Recovery) => Effect.Effect<void>
@@ -60,9 +58,8 @@ export class Service extends Context.Service<Service, Interface>()("@opencode/Su
 const make: Effect.Effect<
   Interface,
   never,
-  Database.Service | Session.Service | SessionStore.Service | Job.Service | Bus.Service | KV.Service | Scope.Scope
+  Session.Service | SessionStore.Service | Job.Service | Bus.Service | KV.Service | Scope.Scope
 > = Effect.gen(function* () {
-  const db = (yield* Database.Service).db
   const sessions = yield* Session.Service
   const store = yield* SessionStore.Service
   const jobs = yield* Job.Service
@@ -81,7 +78,7 @@ const make: Effect.Effect<
   const readMarker = (sessionID: SessionSchema.ID) =>
     kv.get(markerKey(sessionID)).pipe(Effect.map((value) => Option.getOrUndefined(decodeMarker(value))))
 
-  const writeMarker = (sessionID: SessionSchema.ID, marker: Marker) =>
+  const writeMarker = (sessionID: SessionSchema.ID, marker: Marker, dirty = false) =>
     Effect.all(
       [
         kv.set(markerKey(sessionID), {
@@ -91,6 +88,7 @@ const make: Effect.Effect<
           ...(marker.reported ? { reported: marker.reported } : {}),
         }),
         kv.set(childIndexKey(marker.parentSessionID, sessionID), ""),
+        dirty ? kv.set(dirtyKey(sessionID), "") : Effect.void,
       ],
       { discard: true },
     )
@@ -99,6 +97,7 @@ const make: Effect.Effect<
     Effect.all(
       [
         kv.remove(markerKey(childSessionID)),
+        kv.remove(dirtyKey(childSessionID)),
         parentSessionID ? kv.remove(childIndexKey(parentSessionID, childSessionID)) : Effect.void,
       ],
       { discard: true },
@@ -110,40 +109,33 @@ const make: Effect.Effect<
       Effect.orDie,
     )
 
-  // Startup only visits markers that are orphaned or behind the child's newest projected idle row.
   const dirtyMarkers = Effect.gen(function* () {
-    const start = markerPrefix.length + 1
-    const rows = yield* db
-      .select({ key: KVTable.key })
-      .from(KVTable)
-      .where(
-        and(
-          gte(KVTable.key, markerPrefix),
-          lt(KVTable.key, markerPrefixEnd),
-          sql`(
-            not exists (
-              select 1 from ${SessionTable} child
-              join ${SessionTable} parent on parent.id = json_extract(${KVTable.value}, '$.parentSessionID')
-              where child.id = substr(${KVTable.key}, ${start})
-                and child.parent_id = parent.id
-            )
-            or coalesce(json_extract(${KVTable.value}, '$.reported'), '') != coalesce((
-              select m.id from ${SessionMessageTable} m
-              where m.session_id = substr(${KVTable.key}, ${start})
-                and m.type = 'idle'
-              order by m.seq desc
-              limit 1
-            ), '')
-          )`,
-        ),
-      )
-      .all()
-      .pipe(Effect.orDie)
-    return rows.flatMap((row) => {
-      const id = Schema.decodeUnknownOption(SessionSchema.ID)(row.key.slice(markerPrefix.length))
-      return Option.isSome(id) ? [id.value] : []
-    })
+    const ids: SessionSchema.ID[] = []
+    let after: string | undefined
+    do {
+      const page = yield* kv.scan({ prefix: dirtyPrefix, after })
+      for (const entry of page.entries) {
+        const id = Schema.decodeUnknownOption(SessionSchema.ID)(entry.key.slice(dirtyPrefix.length))
+        if (Option.isSome(id)) ids.push(id.value)
+        else yield* kv.remove(entry.key)
+      }
+      after = page.next
+    } while (after)
+    return ids
   })
+
+  // Record `subagent.dirty/<childID>` inside the same SQLite transaction that projects an idle
+  // or revert event, so startup recovery scans only children with unhandled transitions.
+  if (!projectedBuses.has(bus)) {
+    projectedBuses.add(bus)
+    const markDirty = (event: { readonly data: { readonly sessionID: SessionSchema.ID } }) =>
+      readMarker(event.data.sessionID).pipe(
+        Effect.flatMap((marker) => (marker ? kv.set(dirtyKey(event.data.sessionID), "") : Effect.void)),
+      )
+    yield* bus.project(SessionEvent.Execution.Succeeded, markDirty)
+    yield* bus.project(SessionEvent.Execution.Failed, markDirty)
+    yield* bus.project(SessionEvent.RevertEvent.Committed, markDirty)
+  }
 
   // A revert can delete the previously reported idle boundary; re-anchor to the newest pre-revert idle.
   const reanchor = Effect.fnUntraced(function* (sessionID: SessionSchema.ID, marker: Marker) {
@@ -188,7 +180,10 @@ const make: Effect.Effect<
   const syncUnlocked = Effect.fnUntraced(function* (sessionID: SessionSchema.ID) {
     if ((foreground.get(sessionID) ?? 0) > 0) return
     const marker = yield* readMarker(sessionID)
-    if (!marker) return
+    if (!marker) {
+      yield* kv.remove(dirtyKey(sessionID))
+      return
+    }
     const child = yield* store.get(sessionID)
     if (!child || child.parentID !== marker.parentSessionID || !(yield* store.get(marker.parentSessionID))) {
       yield* removeMarker(sessionID, marker.parentSessionID)
@@ -242,7 +237,10 @@ const make: Effect.Effect<
         starter = undefined
       }
       const last = page.at(-1)
-      if (page.length < TURN_PAGE || !last) return
+      if (page.length < TURN_PAGE || !last) {
+        yield* kv.remove(dirtyKey(sessionID))
+        return
+      }
       cursor = { id: last.id, direction: "next" }
     }
   })
@@ -327,7 +325,11 @@ const make: Effect.Effect<
           return locks
             .withLock(sessionID)(
               readMarker(sessionID).pipe(
-                Effect.flatMap((marker) => (marker ? reanchor(sessionID, marker).pipe(Effect.asVoid) : Effect.void)),
+                Effect.flatMap((marker) =>
+                  marker
+                    ? reanchor(sessionID, marker).pipe(Effect.andThen(kv.remove(dirtyKey(sessionID))))
+                    : kv.remove(dirtyKey(sessionID)),
+                ),
               ),
             )
             .pipe(
@@ -398,12 +400,16 @@ const make: Effect.Effect<
         if (existing) yield* syncUnlocked(recovery.childSessionID)
         const refreshed = existing ? yield* readMarker(recovery.childSessionID) : undefined
         const reported = refreshed ? refreshed.reported : yield* latestIdle(recovery.childSessionID)
-        yield* writeMarker(recovery.childSessionID, {
-          parentSessionID: recovery.parentSessionID,
-          agent: recovery.agent,
-          description: recovery.description,
-          reported,
-        })
+        yield* writeMarker(
+          recovery.childSessionID,
+          {
+            parentSessionID: recovery.parentSessionID,
+            agent: recovery.agent,
+            description: recovery.description,
+            reported,
+          },
+          true,
+        )
       }),
     ),
   )
@@ -412,12 +418,16 @@ const make: Effect.Effect<
     locks.withLock(recovery.childSessionID)(
       Effect.gen(function* () {
         if (yield* readMarker(recovery.childSessionID)) return
-        yield* writeMarker(recovery.childSessionID, {
-          parentSessionID: recovery.parentSessionID,
-          agent: recovery.agent,
-          description: recovery.description,
-          reported: yield* latestIdle(recovery.childSessionID),
-        })
+        yield* writeMarker(
+          recovery.childSessionID,
+          {
+            parentSessionID: recovery.parentSessionID,
+            agent: recovery.agent,
+            description: recovery.description,
+            reported: yield* latestIdle(recovery.childSessionID),
+          },
+          true,
+        )
       }),
     ),
   )
@@ -515,5 +525,5 @@ export const layer = Layer.effect(Service, make)
 export const node: LayerNode.Provider<Service, never, typeof Node.tags.values.global> = Node.makeGlobalNode({
   service: Service,
   layer,
-  deps: [Database.node, Session.node, SessionStore.node, Job.node, Bus.node, KV.node],
+  deps: [Session.node, SessionStore.node, Job.node, Bus.node, KV.node],
 })

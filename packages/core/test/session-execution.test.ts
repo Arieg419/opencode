@@ -926,6 +926,7 @@ describe("SessionRestart background recovery", () => {
         agent: "explore",
         description: "Completed inspection",
       })
+      yield* kv.set(`subagent.dirty/${child}`, "")
       yield* recordAssistantText(bus, child, "First recovered result")
       yield* bus.publish(SessionEvent.Execution.Succeeded, { sessionID: child })
       yield* recordAssistantText(bus, child, "Second recovered result")
@@ -956,6 +957,7 @@ describe("SessionRestart background recovery", () => {
       expect(yield* kv.get(`subagent.parent/${child}`)).toMatchObject({
         reported: SessionMessage.ID.fromEvent(settled.id),
       })
+      expect(yield* kv.get(`subagent.dirty/${child}`)).toBeUndefined()
     }),
   )
 
@@ -976,6 +978,7 @@ describe("SessionRestart background recovery", () => {
         description: "Completed inspection",
       }
       yield* kv.set(`subagent.parent/${child}`, marker)
+      yield* kv.set(`subagent.dirty/${child}`, "")
       yield* recordAssistantText(bus, child, "Recovered result")
       const settled = yield* bus.publish(SessionEvent.Execution.Succeeded, { sessionID: child })
       yield* admission.admit({
@@ -991,6 +994,7 @@ describe("SessionRestart background recovery", () => {
       expect(Exit.isFailure(exit)).toBe(true)
       if (Exit.isFailure(exit)) expect(Cause.squash(exit.cause)).toBeInstanceOf(Session.SyntheticConflictError)
       expect(yield* kv.get(`subagent.parent/${child}`)).toEqual(marker)
+      expect(yield* kv.get(`subagent.dirty/${child}`)).toBe("")
       expect(yield* sessions.inbox(parent)).toMatchObject([{ type: "user", payload: { text: "User input" } }])
     }),
   )
@@ -1014,6 +1018,7 @@ describe("SessionRestart background recovery", () => {
             agent: "explore",
             description: "Completed inspection",
           })
+          yield* kv.set(`subagent.dirty/${child}`, "")
           yield* recordAssistantText(bus, child, "Recovered result")
           yield* bus.publish(SessionEvent.Execution.Succeeded, { sessionID: child })
         }

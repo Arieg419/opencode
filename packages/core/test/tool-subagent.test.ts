@@ -360,6 +360,7 @@ describe("SubagentTool", () => {
             description: "background review",
             reported: expect.stringMatching(/^msg_/),
           })
+          expect(yield* kv.get(`subagent.dirty/${childID}`)).toBeUndefined()
 
           // Reproduce a crash after synthetic admission commits, before the saved marker advances.
           yield* kv.set(`subagent.parent/${childID}`, {
@@ -367,6 +368,7 @@ describe("SubagentTool", () => {
             agent: "reviewer",
             description: "background review",
           })
+          yield* kv.set(`subagent.dirty/${childID}`, "")
           const restart = yield* SessionRestart.Service
           yield* restart.resumeSuspendedSessions
           yield* sessions.wait(parent.id)
@@ -375,6 +377,7 @@ describe("SubagentTool", () => {
             messages,
           )
           expect(yield* kv.get(`subagent.parent/${childID}`)).toEqual(saved)
+          expect(yield* kv.get(`subagent.dirty/${childID}`)).toBeUndefined()
           expect(yield* jobs.pendingBackground).toEqual([])
         }),
       ),
@@ -748,8 +751,10 @@ describe("SubagentTool", () => {
 
               // Rewinding the marker before those two turns reconciles both idempotently on restart without duplicates.
               if (markerBeforeCatchUp !== undefined) yield* kv.set(`subagent.parent/${childID}`, markerBeforeCatchUp)
+              yield* kv.set(`subagent.dirty/${childID}`, "")
               yield* restart.resumeSuspendedSessions
               expect(yield* Queue.size(notices)).toBe(0)
+              expect(yield* kv.get(`subagent.dirty/${childID}`)).toBeUndefined()
             }).pipe(Effect.provide(second))
           }),
         ),
