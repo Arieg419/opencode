@@ -111,6 +111,7 @@ export const httpClientLayer = Layer.effect(
   HttpClient.HttpClient,
   Effect.gen(function* () {
     const certificates = yield* Service
+    const fs = yield* FSUtil.Service
     const client = yield* HttpClient.HttpClient
     return HttpClient.transform(client, (effect, request) =>
       Effect.gen(function* () {
@@ -128,21 +129,22 @@ export const httpClientLayer = Layer.effect(
           return yield* fail(
             `A client certificate is configured for ${host}, which would also be sent to the HTTPS proxy. Add ${host} to NO_PROXY or use an http:// proxy`,
           )
+        const tls = yield* Effect.all({
+          cert: fs.readFileString(rule.cert),
+          key: fs.readFileString(rule.key),
+          passphrase: rule.passphraseFile
+            ? fs.readFileString(rule.passphraseFile).pipe(Effect.map((text) => text.replace(/[\r\n]+$/, "")))
+            : Effect.succeed(undefined),
+        }).pipe(Effect.mapError((error) => fail(`Could not read the client certificate for ${host}: ${error.message}`)))
         const fetch = yield* FetchHttpClient.Fetch
         return yield* effect.pipe(
           Effect.provideService(
             FetchHttpClient.Fetch,
             Object.assign(
-              async (input: Parameters<typeof globalThis.fetch>[0], init?: BunFetchRequestInit) =>
+              (input: Parameters<typeof globalThis.fetch>[0], init?: BunFetchRequestInit) =>
                 fetch(input, {
                   ...init,
-                  tls: {
-                    ...init?.tls,
-                    cert: Bun.file(rule.cert),
-                    key: Bun.file(rule.key),
-                    passphrase:
-                      rule.passphraseFile && (await Bun.file(rule.passphraseFile).text()).replace(/[\r\n]+$/, ""),
-                  },
+                  tls: { ...init?.tls, ...tls },
                   // Fetch would follow a redirect with the same TLS options, presenting the certificate to whatever
                   // host the server names. Only callers that handle redirects themselves see the 3xx.
                   redirect: init?.redirect === "manual" ? "manual" : "error",

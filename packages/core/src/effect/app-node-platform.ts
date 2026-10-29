@@ -4,6 +4,7 @@ import { FetchHttpClient, HttpClient } from "effect/http"
 import { Socket } from "effect/socket"
 import { makeGlobalNode } from "@opencode/util/effect/app-node"
 import { httpClient } from "@opencode/util/effect/app-node-platform"
+import { FSUtil } from "@opencode/util/fs-util"
 import { ClientCertificate } from "../client-certificate.js"
 import { WebSocketConstructor } from "./websocket-constructor.js"
 
@@ -22,7 +23,7 @@ const withoutBunTimeout = Layer.effect(
 export const requestExecutor = makeGlobalNode({
   service: RequestExecutor.Service,
   layer: RequestExecutor.layer.pipe(Layer.provide(withoutBunTimeout), Layer.provide(ClientCertificate.httpClientLayer)),
-  deps: [httpClient, ClientCertificate.node],
+  deps: [httpClient, ClientCertificate.node, FSUtil.node],
 })
 
 export const llmClient = makeGlobalNode({ service: LLMClient.Service, layer: LLMClient.layer, deps: [requestExecutor] })
