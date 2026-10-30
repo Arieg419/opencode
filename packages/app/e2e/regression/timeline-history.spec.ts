@@ -425,7 +425,9 @@ test.describe("timeline history", () => {
       userMessage(),
       assistantMessage([textPart("prt_page_keys_text", "Paging from the composer")], { completed: false }),
     ])
+
     const older: string[] = []
+
     const timeline = await setupTimeline(page, {
       reducedMotion: true,
       message: (_, id) => messages.find((message) => message.id === id),
@@ -439,10 +441,12 @@ test.describe("timeline history", () => {
         if (request.before && request.phase === "start") older.push(request.before)
       },
     })
+
     const scroller = timelineScroller(page)
     const editor = page.locator('[data-component="composer-editor"]')
     const suggestions = page.locator('[data-component="composer-suggestions"]')
     const top = () => scroller.evaluate((element) => element.scrollTop)
+
     const fromEnd = () =>
       scroller.evaluate((element) => element.scrollHeight - element.clientHeight - element.scrollTop)
 
@@ -473,9 +477,11 @@ test.describe("timeline history", () => {
     await editor.press("Backspace")
 
     await page.keyboard.type("keep this draft")
+
     const pageHeight = await page
       .locator('[data-slot="session-timeline-visible"]')
       .evaluate((element) => element.clientHeight)
+
     await editor.press("PageUp")
     await expect.poll(top).toBeLessThan(resting - pageHeight * 0.6)
     expect(resting - (await top())).toBeLessThan(pageHeight)
