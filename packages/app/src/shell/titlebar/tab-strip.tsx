@@ -396,6 +396,7 @@ export function TitlebarTabStrip(props: {
   let scrollRef!: HTMLDivElement
   // Each vertical edge feathers by as much as there is left to scroll past it, so it appears and leaves without a jump.
   const [fade, setFade] = createStore({ top: 0, bottom: 0 })
+
   const measureFade = () =>
     setFade({
       top: Math.min(16, Math.round(scrollRef.scrollTop)),
@@ -404,6 +405,7 @@ export function TitlebarTabStrip(props: {
         Math.max(0, Math.round(scrollRef.scrollHeight - scrollRef.clientHeight - scrollRef.scrollTop)),
       ),
     })
+
   onMount(() => {
     if (vertical()) createResizeObserver([scrollRef, listRef], measureFade)
   })
