@@ -227,6 +227,30 @@ describe("ReadToolFileSystem", () => {
     }),
   )
 
+  for (const content of ["", "\n", "one\n", "one\n" + "x".repeat(300_000) + "\n"]) {
+    it.live(`identifies the actual EOF bytes for a ${content.length}-byte invalid read`, () =>
+      Effect.gen(function* () {
+        const current = yield* fixture
+        const file = absolute(path.join(current.directory, "revision.txt"))
+        yield* current.files.writeFileString(file, content)
+        const ranges: number[] = []
+        const environment = {
+          ...current.environment,
+          read: (input: string, range?: { readonly offset: number; readonly length: number }) => {
+            ranges.push(range?.offset ?? 0)
+            return current.environment.read(input, range)
+          },
+        }
+        const error = yield* ReadToolFileSystem.read(environment, file, "revision.txt", { offset: 100 }).pipe(
+          Effect.flip,
+        )
+
+        expect(error).toMatchObject({ version: Bun.SHA256.hash(content, "hex") })
+        expect(ranges).toEqual(content.length > 256 * 1024 ? [0, 256 * 1024] : [0])
+      }),
+    )
+  }
+
   it.effect("pages text with one-based offsets", () =>
     Effect.gen(function* () {
       const { environment, files, directory } = yield* fixture

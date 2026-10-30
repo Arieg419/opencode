@@ -11,6 +11,7 @@ import { SessionInstructions } from "../../session/instructions.js"
 import { AbsolutePath } from "../../schema.js"
 import { ReadToolFileSystem } from "../read-filesystem.js"
 import { Environment } from "../../environment/index.js"
+import { ReadRange } from "../read-range.js"
 
 export const name = "read"
 const FILENAME = "AGENTS.md"
@@ -34,6 +35,7 @@ export const Plugin = {
     const sessionInstructions = yield* SessionInstructions.Service
     const fs = yield* FSUtil.Service
     const location = yield* Location.Service
+    const checkRange = yield* ReadRange.make
 
     yield* ctx.tool
       .transform((editor) =>
@@ -47,10 +49,25 @@ export const Plugin = {
           execute: (input, context) => {
             return Effect.gen(function* () {
               const read = (target: FileAccess.Target) =>
-                reader.read(target.absolute, target.resource, {
-                  offset: input.offset,
-                  limit: input.limit,
-                })
+                reader
+                  .read(target.absolute, target.resource, {
+                    offset: input.offset,
+                    limit: input.limit,
+                  })
+                  .pipe(
+                    Effect.catchTag("ReadTool.OffsetOutOfRangeError", (error) =>
+                      Effect.gen(function* () {
+                        if (error.version === undefined) return yield* error
+                        const range = {
+                          path: yield* fs.resolve(target.absolute),
+                          version: error.version,
+                          totalLines: error.lines,
+                        }
+                        yield* checkRange(range, context)
+                        return yield* new ToolFailure({ message: error.message, error, metadata: { readRange: range } })
+                      }),
+                    ),
+                  )
 
               const requested = yield* access.authorizeRead(input.path, context)
               const result = yield* read(requested).pipe(
