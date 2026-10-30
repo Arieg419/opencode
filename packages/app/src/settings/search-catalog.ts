@@ -120,9 +120,9 @@ export const clientSettings: Entry<SettingsRootTab>[] = [
   },
   {
     tab: "experimental",
-    label: "settings.experimental.row.voiceCalls.title",
-    target: "settings-voice-calls",
-    description: "settings.experimental.row.voiceCalls.description",
+    label: "settings.experimental.row.voice.title",
+    target: "settings-voice",
+    description: "settings.experimental.row.voice.description",
     keywords: "voice call speak talk microphone gpt-live audio",
   },
   {

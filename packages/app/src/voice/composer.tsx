@@ -147,7 +147,7 @@ export function VoiceCallButton(props: { session: SessionInfo | undefined }) {
   const language = useLanguage()
 
   return (
-    <Show when={settings.general.voiceCalls() && props.session && voice.state.status === "idle"}>
+    <Show when={settings.general.voice() && props.session && voice.state.status === "idle"}>
       <Tooltip placement="top" value={language.t("voice.call")}>
         <IconButton
           data-action="composer-voice-call"

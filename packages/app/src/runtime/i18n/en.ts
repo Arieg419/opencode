@@ -1,13 +1,13 @@
 import { DESKTOP_NATIVE_ENGLISH } from "./desktop-native"
 
 export const dict = {
-  "voice.call": "Start voice call",
+  "voice.call": "Start voice",
   "voice.mute": "Mute",
   "voice.unmute": "Unmute",
   "voice.end": "End call",
   "voice.close": "Close",
   "voice.rejoin": "Rejoin",
-  "voice.panel": "Voice call",
+  "voice.panel": "Voice",
   "voice.captions": "Captions",
   "voice.captions.show": "Show captions",
   "voice.captions.hide": "Hide captions",
@@ -15,13 +15,13 @@ export const dict = {
   "voice.connecting": "Connecting…",
   "voice.you": "You:",
   "voice.assistant": "OpenCode:",
-  "voice.failure.unavailable": "Voice calls need an OpenAI API key or an OpenCode Console connection on this server.",
+  "voice.failure.unavailable": "Voice needs an OpenAI API key or an OpenCode Console connection on this server.",
   "voice.failure.microphone": "Microphone access is required to call.",
   "voice.failure.dropped": "The call disconnected.",
   "voice.failure.connection": "Couldn’t connect the call.",
   "voice.setup": "Set up",
   "voice.return": "Return to the call’s session",
-  "voice.onboarding.eyebrow": "Voice calls",
+  "voice.onboarding.eyebrow": "Voice",
   "voice.onboarding.title": "Talk to your sessions",
   "voice.onboarding.description":
     "Start a call from any session and say what you need. OpenCode hands the work to the right session and tells you when it’s done.",
@@ -49,7 +49,7 @@ export const dict = {
   "voice.onboarding.setup.openai": "Calls are billed to your OpenAI account.",
   "voice.onboarding.setup.connect": "Connect",
   "voice.onboarding.setup.key": "Add key",
-  "voice.onboarding.setup.chatgpt": "A ChatGPT sign-in can’t start voice calls.",
+  "voice.onboarding.setup.chatgpt": "A ChatGPT sign-in can’t be used for voice.",
   "voice.onboarding.billing.console": "Billed to your OpenCode Console workspace",
   "voice.onboarding.billing.openai": "Billed to this server’s OpenAI account",
   "voice.onboarding.later": "Not now",
@@ -832,8 +832,8 @@ export const dict = {
   "settings.experimental.row.foldUserMessages.description": "Fold your messages past 12 lines behind a Read more button",
   "settings.experimental.row.newQuestionUI.title": "New question UI",
   "settings.experimental.row.newQuestionUI.description": "Preview the keyboard-first question dock",
-  "settings.experimental.row.voiceCalls.title": "Voice calls",
-  "settings.experimental.row.voiceCalls.description":
+  "settings.experimental.row.voice.title": "Voice",
+  "settings.experimental.row.voice.description":
     "Talk to your sessions with GPT-Live from the composer. Uses the server's OpenAI key or OpenCode Console connection",
   "settings.plugins.reload": "Reload",
   "settings.plugins.status.loading": "Loading",
