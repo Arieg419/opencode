@@ -18,6 +18,7 @@ import { Tool } from "@opencode/core/tool"
 import { ReadTool } from "@opencode/core/tool/plugin/read"
 import { ReadToolFileSystem } from "@opencode/core/tool/read-filesystem"
 import { makeLocationNode } from "@opencode/util/effect/app-node"
+import { SessionStore } from "@opencode/core/session/store"
 import { SessionInstructions } from "@opencode/core/session/instructions"
 import { Environment } from "@opencode/core/environment/index"
 import { testEffect } from "./lib/effect"
@@ -34,6 +35,7 @@ const readToolNode = makeLocationNode({
     Image.node,
     Permission.node,
     SessionInstructions.node,
+    SessionStore.node,
     FSUtil.node,
     Location.node,
   ],
