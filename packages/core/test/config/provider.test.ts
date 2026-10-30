@@ -881,6 +881,202 @@ describe("ConfigProviderPlugin.Plugin", () => {
     }),
   )
 
+  it.effect("preserves plugin-supplied variants on custom models across config layers and model packages", () =>
+    Effect.gen(function* () {
+      const models = yield* Model.Service
+      const customID = Provider.ID.make("custom")
+      const perModelID = Provider.ID.make("per-model")
+      const customTiers = ["none", "low", "medium", "xhigh"].map((id) => ({
+        id: Model.VariantID.make(id),
+        settings: { reasoningEffort: id },
+      }))
+      yield* models.transform((editor) => {
+        for (const id of ["plain", "same-package"])
+          editor.update(customID, Model.ID.make(id), (model) => {
+            model.variants = structuredClone(customTiers)
+          })
+        editor.update(perModelID, Model.ID.make("only-model-package"), (model) => {
+          model.variants = structuredClone(customTiers)
+        })
+      })
+      yield* addPlugin([
+        new Document({
+          type: "document",
+          info: decode({
+            providers: {
+              custom: {
+                package: "aisdk:@ai-sdk/openai-compatible",
+                models: {
+                  plain: { name: "Plain" },
+                  "same-package": { package: "aisdk:@ai-sdk/openai-compatible" },
+                },
+              },
+              "per-model": {
+                models: {
+                  "only-model-package": { package: "aisdk:@ai-sdk/openai-compatible" },
+                },
+              },
+            },
+          }),
+        }),
+        new Document({
+          type: "document",
+          info: decode({
+            providers: {
+              custom: {
+                models: {
+                  plain: { limit: { output: 16_000 } },
+                },
+              },
+            },
+          }),
+        }),
+      ])
+
+      const ids = (providerID: Provider.ID, id: string) =>
+        models
+          .get(providerID, Model.ID.make(id))
+          .pipe(Effect.map((model) => required(model).variants.map((variant) => variant.id)))
+      const expected = customTiers.map((variant) => variant.id)
+      expect(yield* ids(customID, "plain")).toEqual(expected)
+      expect(yield* ids(customID, "same-package")).toEqual(expected)
+      expect(yield* ids(perModelID, "only-model-package")).toEqual(expected)
+    }),
+  )
+
+  it.effect("generates custom model variants against the final layered package", () =>
+    Effect.gen(function* () {
+      const models = yield* Model.Service
+      yield* addPlugin([
+        new Document({
+          type: "document",
+          info: decode({
+            providers: {
+              custom: {
+                package: "aisdk:@ai-sdk/openai-compatible",
+                models: {
+                  claude: { modelID: "claude-opus-4-8" },
+                },
+              },
+            },
+          }),
+        }),
+        new Document({
+          type: "document",
+          info: decode({
+            providers: {
+              custom: {
+                models: {
+                  claude: { package: "aisdk:@ai-sdk/anthropic" },
+                },
+              },
+            },
+          }),
+        }),
+      ])
+
+      const model = required(yield* models.get(Provider.ID.make("custom"), Model.ID.make("claude")))
+      expect(model.package).toBe("@opencode/ai/providers/anthropic")
+      expect(model.variants.find((variant) => variant.id === "max")).toEqual({
+        id: Model.VariantID.make("max"),
+        settings: { effort: "max", thinking: { type: "adaptive", display: "summarized" } },
+      })
+    }),
+  )
+
+  it.effect("respells inherited catalog variants from reasoning capabilities when config changes the provider package", () =>
+    Effect.gen(function* () {
+      const providers = yield* Provider.Service
+      const models = yield* Model.Service
+      const providerID = Provider.ID.make("zai")
+      const chatVariant = {
+        id: Model.VariantID.make("low"),
+        settings: { thinking: { type: "enabled", clear_thinking: false }, reasoningEffort: "low" },
+      }
+      yield* providers.transform((editor) => {
+        editor.update(providerID, (provider) => {
+          provider.package = "@opencode/ai/providers/zai/chat"
+        })
+        editor.models.update(providerID, Model.ID.make("glm-5.3"), (model) => {
+          model.capabilities = {
+            ...model.capabilities,
+            reasoning: { supported: true, effort: ["low", "max"] },
+          }
+          model.variants = [chatVariant]
+        })
+        editor.models.update(providerID, Model.ID.make("glm-pinned"), (model) => {
+          model.package = "@opencode/ai/providers/zai/chat"
+          model.variants = [chatVariant]
+        })
+      })
+      yield* addPlugin([
+        new Document({
+          type: "document",
+          info: decode({ providers: { zai: { package: "@opencode/ai/providers/anthropic" } } }),
+        }),
+      ])
+
+      const inherited = required(yield* models.get(providerID, Model.ID.make("glm-5.3")))
+      expect(inherited.variants).toEqual([
+        {
+          id: Model.VariantID.make("low"),
+          settings: { effort: "low", thinking: { type: "adaptive", display: "summarized" } },
+        },
+        {
+          id: Model.VariantID.make("max"),
+          settings: { effort: "max", thinking: { type: "adaptive", display: "summarized" } },
+        },
+      ])
+      expect(required(yield* models.get(providerID, Model.ID.make("glm-pinned"))).variants).toEqual([chatVariant])
+    }),
+  )
+
+  it.effect("keeps variants configured in another document when a later one changes the provider package", () =>
+    Effect.gen(function* () {
+      const providers = yield* Provider.Service
+      const models = yield* Model.Service
+      const providerID = Provider.ID.make("zai")
+      const modelID = Model.ID.make("glm-5.3")
+      yield* providers.transform((editor) => {
+        editor.update(providerID, (provider) => {
+          provider.package = "@opencode/ai/providers/zai/chat"
+        })
+        editor.models.update(providerID, modelID, (model) => {
+          model.variants = [
+            {
+              id: Model.VariantID.make("low"),
+              settings: { thinking: { type: "enabled", clear_thinking: false }, reasoningEffort: "low" },
+            },
+          ]
+        })
+      })
+      yield* addPlugin([
+        new Document({
+          type: "document",
+          info: decode({
+            providers: {
+              zai: {
+                models: {
+                  [modelID]: {
+                    variants: [{ id: "low", settings: { thinking: { type: "enabled", budgetTokens: 1024 } } }],
+                  },
+                },
+              },
+            },
+          }),
+        }),
+        new Document({
+          type: "document",
+          info: decode({ providers: { zai: { package: "@opencode/ai/providers/anthropic" } } }),
+        }),
+      ])
+
+      const low = required(yield* models.get(providerID, modelID)).variants.find((variant) => variant.id === "low")
+      expect(low?.settings).toMatchObject({ thinking: { type: "enabled", budgetTokens: 1024 } })
+      expect(low?.settings).not.toHaveProperty("reasoningEffort")
+    }),
+  )
+
   it.effect("builds configured reasoning variants after provider and model package normalization", () =>
     Effect.gen(function* () {
       const models = yield* Model.Service

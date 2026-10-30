@@ -186,7 +186,9 @@ export type ModelCacheFormat = "anthropic" | "alibaba"
 
 export type ModelMediaInput = "assets" | "state" | "root"
 
-export type ModelCapabilities = { tools: boolean; input: Array<string>; output: Array<string>; temperature?: boolean }
+export type ModelReasoning =
+  | { supported: false }
+  | { supported: true; toggle?: boolean; effort?: Array<string>; budget?: { min?: number; max?: number } }
 
 export type MoneyUSDPerMillionTokens = number
 
@@ -697,6 +699,14 @@ export type ProviderCompatibility = {
   streamUsage?: boolean
   cacheFormat?: ModelCacheFormat
   mediaInput?: ModelMediaInput
+}
+
+export type ModelCapabilities = {
+  tools: boolean
+  input: Array<string>
+  output: Array<string>
+  temperature?: boolean
+  reasoning?: ModelReasoning
 }
 
 export type ModelCost = {
