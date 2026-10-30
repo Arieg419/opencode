@@ -149,6 +149,9 @@ export const { use: useSettingsSurface, provider: SettingsSurfaceProvider } = cr
         expand() {
           setSearch("expanded", true)
         },
+        collapse() {
+          setSearch("expanded", false)
+        },
         highlight(id: string) {
           setSearch("highlighted", id)
         },
