@@ -133,7 +133,7 @@ it.effect("preserves running tool start time across metadata updates", () =>
           return state
         }),
       completeToolCall: () => Effect.void,
-      beforeToolCall: () => Effect.void,
+      beforeToolCall: () => Effect.succeed(false),
     } satisfies Pick<SessionProcessor.Handle, "message" | "beforeToolCall" | "updateToolCall" | "completeToolCall">
 
     const tools = yield* SessionTools.resolve({

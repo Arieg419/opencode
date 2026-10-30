@@ -37,7 +37,7 @@ export interface Handle {
     args: unknown
     callID: string
     abort?: AbortSignal
-  }) => Effect.Effect<void>
+  }) => Effect.Effect<boolean>
   readonly updateToolCall: (
     toolCallID: string,
     update: (part: SessionV1.ToolPart) => SessionV1.ToolPart,
@@ -298,15 +298,7 @@ const layer = Layer.effect(
               JSON.stringify(part.state.input) === JSON.stringify(input),
           )
         )
-          return
-
-        // Read's version-aware range gate owns repeated invalid ranges.
-        if (
-          name === "read" &&
-          !call.part.metadata?.providerExecuted &&
-          recentParts.slice(0, -1).every((part) => part.state.status === "error" && part.state.metadata?.readRange)
-        )
-          return
+          return false
 
         const agent = yield* agents.get(ctx.assistantMessage.agent)
         const current = yield* session.get(ctx.sessionID)
@@ -326,6 +318,7 @@ const layer = Layer.effect(
               }),
             ),
           )
+        return true
       })
 
       const beforeToolCall = Effect.fn("SessionProcessor.beforeToolCall")(function* (
@@ -335,8 +328,9 @@ const layer = Layer.effect(
         const signal = input.abort
         if (!signal) return yield* gate.pipe(Effect.orDie)
         signal.throwIfAborted()
-        yield* Effect.raceFirst(gate, AppProcess.waitForAbort(signal)).pipe(Effect.orDie)
+        const checked = yield* Effect.raceFirst(gate, AppProcess.waitForAbort(signal)).pipe(Effect.orDie)
         signal.throwIfAborted()
+        return checked
       })
 
       const isFilePart = (value: unknown): value is SessionV1.FilePart => Schema.is(SessionV1.FilePart)(value)

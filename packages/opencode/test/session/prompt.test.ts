@@ -6,7 +6,7 @@ import { SessionProjector } from "@opencode-ai/core/session/projector"
 import { eq } from "drizzle-orm"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { expect } from "bun:test"
-import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer } from "effect"
+import { Cause, Deferred, Duration, Effect, Exit, Fiber, Layer, Stream } from "effect"
 import path from "path"
 import { fileURLToPath } from "url"
 import { NamedError } from "@opencode-ai/core/util/error"
@@ -28,6 +28,7 @@ import { Todo } from "../../src/session/todo"
 import { Session } from "@/session/session"
 import { SessionMessageTable } from "@opencode-ai/core/session/sql"
 import { LLM } from "../../src/session/llm"
+import { LLMEvent } from "@opencode-ai/llm"
 import { MessageV2 } from "../../src/session/message-v2"
 import { FSUtil } from "@opencode-ai/core/fs-util"
 import { SessionCompaction } from "../../src/session/compaction"
@@ -1085,6 +1086,102 @@ it.instance("a new user message resets repeated edit detection", () =>
     expect(yield* llm.calls).toBe(6)
   }),
 )
+
+for (const history of ["same", "mixed", "varied"] as const) {
+  const mixed = history === "mixed"
+  const readTurnLLM = Layer.succeed(
+    LLM.Service,
+    LLM.Service.of({
+      stream: (input) =>
+        Stream.unwrap(
+          Effect.gen(function* () {
+            const content = input.messages.findLast((message) => message.role === "user")?.content
+            const file = typeof content === "string" ? content : content?.find((part) => part.type === "text")?.text
+            if (!file) throw new Error("read fixture path missing")
+            const previous = input.messages
+              .filter((message) => message.role === "tool")
+              .flatMap((message) => message.content).length
+            const batch = mixed ? (previous === 0 ? [0] : [previous, previous + 1]) : [0, 1, 2]
+            const execute = input.tools.read.execute
+            if (!execute) throw new Error("read tool missing execute")
+            const calls = Stream.fromIterable(batch).pipe(
+              Stream.flatMap((index) => {
+                const id = `same-turn-${index}`
+                const args = { filePath: file, offset: history === "varied" ? 10 + index : 10, limit: 200 }
+                return Stream.make(LLMEvent.toolCall({ id, name: "read", input: args })).pipe(
+                  Stream.concat(
+                    Stream.fromEffect(
+                      Effect.tryPromise({
+                        try: () =>
+                          Promise.resolve(
+                            execute(args, { toolCallId: id, messages: [], abortSignal: new AbortController().signal }),
+                          ),
+                        catch: (error) => error,
+                      }).pipe(
+                        Effect.match({
+                          onFailure: (error) => LLMEvent.toolError({ id, name: "read", message: String(error), error }),
+                          onSuccess: (value) =>
+                            LLMEvent.toolResult({ id, name: "read", result: { type: "json", value } }),
+                        }),
+                      ),
+                    ),
+                  ),
+                )
+              }),
+            )
+            return Stream.make(LLMEvent.stepStart({ index: 0 })).pipe(
+              Stream.concat(calls),
+              Stream.concat(
+                Stream.make(LLMEvent.stepFinish({ index: 0, reason: "stop" }), LLMEvent.finish({ reason: "stop" })),
+              ),
+            )
+          }),
+        ),
+    }),
+  )
+  const readTurnIt = testEffect(
+    LayerNode.compile(promptRoot, [
+      [SessionSummary.node, summary],
+      [LSP.node, lsp],
+      [MCP.node, makeMcp()],
+      [RuntimeFlags.node, runtimeFlags],
+      [LLM.node, readTurnLLM],
+    ]),
+  )
+  readTurnIt.instance(
+    `invalid reads reach a doom-loop gate with ${history} assistant history`,
+    () =>
+      Effect.gen(function* () {
+        const { directory } = yield* TestInstance
+        const file = path.join(directory, "same-turn.txt")
+        yield* writeText(file, "one\ntwo\nthree")
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const chat = yield* sessions.create({
+          permission: [
+            { permission: "*", pattern: "*", action: "allow" },
+            { permission: "doom_loop", pattern: "*", action: "deny" },
+          ],
+        })
+        yield* prompt.prompt({
+          sessionID: chat.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: file }],
+        })
+        yield* prompt.loop({ sessionID: chat.id })
+        const calls = (yield* MessageV2.filterCompactedEffect(chat.id))
+          .flatMap((message) => message.parts)
+          .filter((part): part is SessionV1.ToolPart => part.type === "tool" && part.tool === "read")
+        expect(calls).toHaveLength(3)
+        expect(calls[2].state).toMatchObject({
+          status: "error",
+          error: expect.stringContaining("prevents you from using this specific tool call"),
+        })
+      }),
+    { config: cfg },
+  )
+}
 
 for (const range of [
   { offset: 10, status: "error" },

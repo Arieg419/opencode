@@ -9,6 +9,8 @@ import { InstanceState } from "@/effect/instance-state"
 import { assertExternalDirectoryEffect } from "./external-directory"
 import { Instruction } from "../session/instruction"
 import { isPdfAttachment, sniffAttachmentMime } from "@/util/media"
+import { Database } from "@opencode-ai/core/database/database"
+import { MessageV2 } from "../session/message-v2"
 
 const DEFAULT_READ_LIMIT = 2000
 const MAX_LINE_LENGTH = 2000
@@ -65,7 +67,7 @@ type Metadata = {
 export const ReadTool = Tool.define<
   typeof Parameters,
   Metadata,
-  FSUtil.Service | Instruction.Service | LSP.Service | Scope.Scope
+  FSUtil.Service | Instruction.Service | LSP.Service | Scope.Scope | Database.Service
 >(
   "read",
   Effect.gen(function* () {
@@ -73,6 +75,7 @@ export const ReadTool = Tool.define<
     const instruction = yield* Instruction.Service
     const lsp = yield* LSP.Service
     const scope = yield* Scope.Scope
+    const database = yield* Database.Service
 
     const miss = Effect.fn("ReadTool.miss")(function* (filepath: string) {
       const dir = path.dirname(filepath)
@@ -345,10 +348,10 @@ export const ReadTool = Tool.define<
         yield* ctx.metadata({ metadata: { preview: "", truncated: false, loaded: [], readRange: range } })
         // Changing offsets or rereading valid lines must not hide repeated failures on an unchanged file.
         const boundary = ctx.messages.findLastIndex((message) => message.info.role === "user")
-        const failures = ctx.messages
-          .slice(boundary + 1)
-          .flatMap((message) => message.parts)
-          .filter((part) => {
+        const current = yield* MessageV2.parts(ctx.messageID).pipe(Effect.provideService(Database.Service, database))
+        const captured = ctx.messages.slice(boundary + 1).flatMap((message) => message.parts)
+        const failures = Array.from(new Map([...captured, ...current].map((part) => [part.id, part])).values()).filter(
+          (part) => {
             if (part.type !== "tool" || part.tool !== "read" || part.state.status !== "error") return false
             const previous = part.state.metadata?.readRange
             return (
@@ -356,8 +359,9 @@ export const ReadTool = Tool.define<
               previous.version === range.version &&
               previous.totalLines === range.totalLines
             )
-          })
-        if (failures.length >= 2) {
+          },
+        )
+        if (failures.length >= 2 && ctx.extra?.doomLoopPermissionChecked !== true) {
           yield* ctx.ask({
             permission: "doom_loop",
             patterns: ["read"],

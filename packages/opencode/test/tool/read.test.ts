@@ -20,6 +20,7 @@ import { Instruction } from "../../src/session/instruction"
 import { ReadTool } from "../../src/tool/read"
 import { Truncate } from "@/tool/truncate"
 import { Tool } from "@/tool/tool"
+import { Database } from "@opencode-ai/core/database/database"
 import { Filesystem } from "@/util/filesystem"
 import {
   disposeAllInstances,
@@ -51,6 +52,7 @@ const readLayer = (flags: Partial<RuntimeFlags.Info> = {}) =>
   LayerNode.compile(
     LayerNode.group([
       Agent.node,
+      Database.node,
       FSUtil.node,
       CrossSpawnSpawner.node,
       Instruction.node,

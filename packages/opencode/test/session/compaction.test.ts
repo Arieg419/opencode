@@ -202,7 +202,7 @@ function fake(
     get message() {
       return msg
     },
-    beforeToolCall: () => Effect.void,
+    beforeToolCall: () => Effect.succeed(false),
     updateToolCall: Effect.fn("TestSessionProcessor.updateToolCall")(() => Effect.succeed(undefined)),
     completeToolCall: Effect.fn("TestSessionProcessor.completeToolCall")(() => Effect.void),
     process: Effect.fn("TestSessionProcessor.process")(() => Effect.succeed(result)),

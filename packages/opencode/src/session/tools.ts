@@ -57,12 +57,21 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
   const truncate = yield* Truncate.Service
   const flags = yield* RuntimeFlags.Service
 
-  const context = (args: Record<string, unknown>, options: ToolExecutionOptions): Tool.Context => ({
+  const context = (
+    args: Record<string, unknown>,
+    options: ToolExecutionOptions,
+    doomLoopPermissionChecked = false,
+  ): Tool.Context => ({
     sessionID: input.session.id,
     abort: options.abortSignal!,
     messageID: input.processor.message.id,
     callID: options.toolCallId,
-    extra: { model: input.model, bypassAgentCheck: input.bypassAgentCheck, promptOps: input.promptOps },
+    extra: {
+      model: input.model,
+      bypassAgentCheck: input.bypassAgentCheck,
+      promptOps: input.promptOps,
+      doomLoopPermissionChecked,
+    },
     agent: input.agent.name,
     messages: input.messages,
     metadata: (val) =>
@@ -107,13 +116,13 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
       execute(args, options) {
         return run.promise(
           Effect.gen(function* () {
-            yield* input.processor.beforeToolCall({
+            const checked = yield* input.processor.beforeToolCall({
               tool: item.id,
               args,
               callID: options.toolCallId,
               abort: options.abortSignal,
             })
-            const ctx = context(args, options)
+            const ctx = context(args, options, checked)
             yield* plugin.trigger(
               "tool.execute.before",
               { tool: item.id, sessionID: ctx.sessionID, callID: ctx.callID },
