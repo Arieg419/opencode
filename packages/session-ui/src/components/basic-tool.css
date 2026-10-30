@@ -184,7 +184,17 @@
 @keyframes tool-summary-fade {
   from,
   to {
-    mask-image: linear-gradient(var(--tool-summary-fade-angle), #000 calc(100% - 24px), transparent);
+    mask-image: linear-gradient(
+      var(--tool-summary-fade-angle),
+      #000 calc(100% - 32px),
+      rgb(0 0 0 / 0.74) calc(100% - 26px),
+      rgb(0 0 0 / 0.54) calc(100% - 21px),
+      rgb(0 0 0 / 0.38) calc(100% - 17px),
+      rgb(0 0 0 / 0.19) calc(100% - 11px),
+      rgb(0 0 0 / 0.075) calc(100% - 6px),
+      rgb(0 0 0 / 0.02) calc(100% - 3px),
+      transparent
+    );
   }
 }
 
