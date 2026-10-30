@@ -28,8 +28,8 @@ export const { provider: VoiceProvider, use: useVoice } = createSimpleContext({
         captions: { utterance: number; speaker: CallState["speaker"]; text: string }[]
         /** Whether the transcript above the composer is open. */
         transcript: boolean
-        /** Composers on the call's server now on screen; with none, the floating call shows instead. */
-        composers: number
+        /** Session screens on the call's server now up; with none, the floating call shows instead. */
+        screens: number
       }
     >({
       status: "idle",
@@ -39,7 +39,7 @@ export const { provider: VoiceProvider, use: useVoice } = createSimpleContext({
       title: "",
       captions: [],
       transcript: false,
-      composers: 0,
+      screens: 0,
     })
 
     // Written by the call several times a second and read by the scope every frame, so it stays out of the store.
@@ -200,10 +200,10 @@ export const { provider: VoiceProvider, use: useVoice } = createSimpleContext({
         if (onboarding.done) return void start(server, ctx, session)
         onboard(server, ctx, session)
       },
-      /** Counts a composer on the call's server while it's on screen. */
+      /** Counts a session screen on the call's server while it's up. */
       attach() {
-        setState("composers", (count) => count + 1)
-        onCleanup(() => setState("composers", (count) => count - 1))
+        setState("screens", (count) => count + 1)
+        onCleanup(() => setState("screens", (count) => count - 1))
       },
       /** Shows the session the call follows. */
       reopen() {

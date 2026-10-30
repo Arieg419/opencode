@@ -7,7 +7,7 @@ import { makeEventListener } from "@solid-primitives/event-listener"
 import { useNavigate } from "@solidjs/router"
 import { createEffect, createMemo, on, onCleanup, onMount, Show, type Accessor } from "solid-js"
 import { Composer } from "@/composer/composer"
-import { useVoiceCallActive, VoiceCallButton, VoiceCallControls, VoiceComposer } from "@/voice/composer"
+import { useVoiceSession, VoiceCallButton, VoiceCallControls, VoiceCallStrip, VoiceComposer } from "@/voice/composer"
 import { useComposerState } from "@/composer/persistence"
 import { createComposerControls } from "@/composer/selection"
 import { setCursorPosition } from "@/composer/editor/dom"
@@ -402,7 +402,15 @@ export function ActiveSessionComposerRegion(props: {
   const server = useServerSDK()
   const language = useLanguage()
   const openRoute = useOpenSessionRoute()
-  const voiceActive = useVoiceCallActive()
+  const voiceActive = useVoiceSession(() => props.session.data.info())
+
+  // Whether the composer is what the region shows, the face SessionComposerRegion picks, as opposed to a docked
+  // request, a subagent's bar or a missing location.
+  const composerShown = () =>
+    !missing() &&
+    props.model.region.showComposer() &&
+    !props.model.region.child() &&
+    !props.model.region.state.blocked()
 
   // Only the server's LocationNotFoundError for the session's own Location replaces the composer.
   const missing = createMemo(() => {
@@ -547,27 +555,33 @@ export function ActiveSessionComposerRegion(props: {
         </Show>
       }
       above={
-        <Show when={!missing() && !props.session.data.isChild()}>
-          <SessionComposerLane>
-            <SessionActivityChips
-              subagents={subagents()}
-              shells={shells()}
-              shell={shell}
-              onOpen={open}
-              onStop={stop}
-              onEmpty={props.model.region.focusPrompt}
+        <>
+          {/* With the composer away (a docked request, a subagent, a missing location), the call keeps its row here. */}
+          <Show when={voiceActive() && !composerShown()}>
+            <VoiceCallStrip />
+          </Show>
+          <Show when={!missing() && !props.session.data.isChild()}>
+            <SessionComposerLane>
+              <SessionActivityChips
+                subagents={subagents()}
+                shells={shells()}
+                shell={shell}
+                onOpen={open}
+                onStop={stop}
+                onEmpty={props.model.region.focusPrompt}
+              />
+              <Show when={todosVisible()}>
+                <SessionTodoPill todos={todos()} />
+              </Show>
+              <SessionPluginPills session={props.view()} screen={props.screen} alignment={alignment} />
+            </SessionComposerLane>
+            <SessionQueuePanel queue={props.model.queue} hidden={props.model.region.state.blocked()} />
+            <SessionGoLimitTray
+              sessionID={props.session.identity.params.id}
+              selection={() => props.model.composer.model.selection}
             />
-            <Show when={todosVisible()}>
-              <SessionTodoPill todos={todos()} />
-            </Show>
-            <SessionPluginPills session={props.view()} screen={props.screen} alignment={alignment} />
-          </SessionComposerLane>
-          <SessionQueuePanel queue={props.model.queue} hidden={props.model.region.state.blocked()} />
-          <SessionGoLimitTray
-            sessionID={props.session.identity.params.id}
-            selection={() => props.model.composer.model.selection}
-          />
-        </Show>
+          </Show>
+        </>
       }
       composer={
         <Show
@@ -577,7 +591,7 @@ export function ActiveSessionComposerRegion(props: {
             // The container for the composer's `cqw` caps: only the composer re-evaluates as a panel beside it
             // animates the chat's width.
             <div class="@container">
-              <VoiceComposer session={props.session.data.info()}>
+              <VoiceComposer>
                 <Composer
                   model={props.model.composer}
                   borderUnderlay

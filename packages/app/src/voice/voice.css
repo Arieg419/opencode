@@ -475,3 +475,31 @@
 :root[data-motion="reduce"] .voice-call-pill {
   animation: none;
 }
+
+/* The call's row on a session screen whose composer is away. */
+.voice-call-strip {
+  display: flex;
+  flex-direction: column;
+  margin-block-end: 8px;
+  animation: voice-rise 180ms ease-out;
+}
+
+.voice-call-strip-row {
+  display: flex;
+  height: 44px;
+  align-items: center;
+  padding-inline: 8px;
+  border-radius: 12px;
+  background: var(--v2-background-bg-base);
+  box-shadow: var(--v2-elevation-raised);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .voice-call-strip {
+    animation: none;
+  }
+}
+
+:root[data-motion="reduce"] .voice-call-strip {
+  animation: none;
+}

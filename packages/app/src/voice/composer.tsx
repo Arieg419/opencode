@@ -20,22 +20,32 @@ export function useVoiceCallActive() {
   return () => voice.state.status !== "idle" && voice.state.server === server.key
 }
 
-/** Keeps the call on the session on screen, and opens its captions above the composer. */
-export function VoiceComposer(props: ParentProps<{ session: SessionInfo | undefined }>) {
+/**
+ * The session screen's part in a call on its server: the call follows the session on screen (subagents and sessions
+ * waiting on a request included), and while this screen is up the floating call steps aside.
+ */
+export function useVoiceSession(session: () => SessionInfo | undefined) {
   const voice = useVoice()
   const server = useServer()
   const active = useVoiceCallActive()
 
   createEffect(() => {
-    const session = props.session
+    const current = session()
 
-    if (session && voice.state.server === server.key) voice.view(server.key, session)
+    if (current && voice.state.server === server.key) voice.view(server.key, current)
   })
 
-  // While this composer shows the call, the floating call steps aside.
   createEffect(() => {
     if (active()) voice.attach()
   })
+
+  return active
+}
+
+/** Opens the call's captions above the composer. */
+export function VoiceComposer(props: ParentProps) {
+  const voice = useVoice()
+  const active = useVoiceCallActive()
 
   return (
     <>
@@ -48,8 +58,27 @@ export function VoiceComposer(props: ParentProps<{ session: SessionInfo | undefi
 }
 
 /**
- * A live call when no composer on its server is on screen (the new-session page, settings, another server): what it's
- * following, the time, Mute and End, and a way back to its session.
+ * The call's row on its own, for a session screen whose composer is away: a request docked in its place, a
+ * subagent, or a missing location.
+ */
+export function VoiceCallStrip() {
+  const voice = useVoice()
+
+  return (
+    <div class="voice-call-strip">
+      <Show when={voice.state.transcript}>
+        <VoiceTranscript />
+      </Show>
+      <div class="voice-call-strip-row">
+        <VoiceCallControls />
+      </div>
+    </div>
+  )
+}
+
+/**
+ * A live call when no session screen on its server is up (Home, settings, the new-session page, another server): what
+ * it's following, the time, Mute and End, and a way back to its session.
  */
 export function VoiceCallPill() {
   const voice = useVoice()
@@ -58,7 +87,7 @@ export function VoiceCallPill() {
   const dropped = () => voice.state.status === "dropped"
 
   return (
-    <Show when={voice.state.status !== "idle" && voice.state.composers === 0}>
+    <Show when={voice.state.status !== "idle" && voice.state.screens === 0}>
       <section class="voice-call-pill" role="group" aria-label={language.t("voice.panel")}>
         <button
           type="button"
