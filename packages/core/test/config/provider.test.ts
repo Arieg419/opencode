@@ -895,6 +895,9 @@ describe("ConfigProviderPlugin.Plugin", () => {
           editor.update(customID, Model.ID.make(id), (model) => {
             model.variants = structuredClone(customTiers)
           })
+        editor.update(customID, Model.ID.make("cleared"), (model) => {
+          model.variants = []
+        })
         editor.update(perModelID, Model.ID.make("only-model-package"), (model) => {
           model.variants = structuredClone(customTiers)
         })
@@ -909,6 +912,7 @@ describe("ConfigProviderPlugin.Plugin", () => {
                 models: {
                   plain: { name: "Plain" },
                   "same-package": { package: "aisdk:@ai-sdk/openai-compatible" },
+                  cleared: { name: "Cleared" },
                 },
               },
               "per-model": {
@@ -940,6 +944,7 @@ describe("ConfigProviderPlugin.Plugin", () => {
       const expected = customTiers.map((variant) => variant.id)
       expect(yield* ids(customID, "plain")).toEqual(expected)
       expect(yield* ids(customID, "same-package")).toEqual(expected)
+      expect(yield* ids(customID, "cleared")).toEqual([])
       expect(yield* ids(perModelID, "only-model-package")).toEqual(expected)
     }),
   )
