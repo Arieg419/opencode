@@ -40,26 +40,30 @@ export const Plugin = define({
 
     const sources = {
       defaultModel: undefined as Document["info"]["model"],
-      entries: [] as readonly (readonly [string, ConfigProvider.Info])[],
+      configured: [] as readonly { providerID: string; id: string; configs: readonly ModelConfig[] }[],
     }
     yield* ctx.provider.transform((providers) => {
-      const entries = configuredProviders(loaded.entries)
+      const snapshots = new Map<string, Pick<ProviderRecord, "provider" | "models"> | undefined>()
       const origins = new Map<string, Pick<ProviderRecord, "provider" | "models"> | undefined>()
-      const bases = new Map<string, Model.Info | undefined>()
-      const explicitVariants = new Map<string, ModelConfig[]>()
+      const configured = new Map<string, { providerID: string; id: string; base?: Model.Info; configs: ModelConfig[] }>()
       const snapshot = (id: string) => {
-        if (!origins.has(id)) {
+        if (!snapshots.has(id)) {
           const existing = providers.get(id)
-          origins.set(id, existing && structuredClone({ provider: existing.provider, models: existing.models }))
+          snapshots.set(id, existing && structuredClone({ provider: existing.provider, models: existing.models }))
         }
-        return origins.get(id)
+        return snapshots.get(id)
       }
 
-      for (const [providerID, item] of entries) {
-        snapshot(providerID)
+      for (const [providerID, item] of configuredProviders(loaded.entries)) {
+        if (!origins.has(providerID)) origins.set(providerID, snapshot(providerID))
         const current = providers.get(providerID)
-        const origin = snapshot(item.canonical ?? current?.provider.canonical ?? providerID)
+        const sourceOrigin = snapshot(item.canonical ?? current?.provider.canonical ?? providerID)
         const { changed } = overlayProvider(providers, providerID, item)
+        if (changed) {
+          origins.set(providerID, sourceOrigin)
+          for (const [key, entry] of configured) if (entry.providerID === providerID) configured.delete(key)
+        }
+        const origin = origins.get(providerID)
         const updated = providers.get(providerID)?.provider
         const clearPackage = item.package !== undefined || updated?.package !== (origin?.provider.package ?? "")
         const clearBaseURL =
@@ -73,59 +77,58 @@ export const Plugin = define({
               })
 
         for (const [id, config] of Object.entries(item.models ?? {})) {
-          const base = origin?.models.get(config.modelID ?? id) ?? origin?.models.get(id)
+          const base = sourceOrigin?.models.get(config.modelID ?? id) ?? sourceOrigin?.models.get(id)
           const inherit = changed || !current?.models.has(id)
           const key = `${providerID}\0${id}`
-          if (!bases.has(key) || inherit) {
-            bases.set(key, base)
-            explicitVariants.delete(key)
-          }
-          if (config.capabilities?.reasoning !== undefined || config.variants !== undefined)
-            explicitVariants.set(key, [...(explicitVariants.get(key) ?? []), config])
+          const existing = !inherit ? configured.get(key) : undefined
+          if (existing) existing.configs.push(config)
+          if (!existing) configured.set(key, { providerID, id, base, configs: [config] })
           overlayFields(providers.models, providerID, id, config, inherit ? { base, clearPackage, clearBaseURL } : undefined)
         }
       }
 
-      for (const providerID of new Set(entries.map(([id]) => id))) {
+      for (const [providerID, origin] of origins) {
         const record = providers.get(providerID)
         if (!record) continue
-        const origin = snapshot(record.provider.canonical ?? providerID)
         for (const [id, model] of record.models) {
-          const key = `${providerID}\0${id}`
-          const base = bases.has(key) ? bases.get(key) : origin?.models.get(id)
+          const entry = configured.get(`${providerID}\0${id}`)
+          const base = entry ? entry.base : origin?.models.get(id)
           const finalPackage = model.package ?? record.provider.package
+          const hasExplicitVariants = entry?.configs.some(
+            (config) => config.capabilities?.reasoning !== undefined || config.variants !== undefined,
+          )
           const repackaged =
             base !== undefined &&
             base.variants.length > 0 &&
             finalPackage !== (base.package ?? origin?.provider.package) &&
             Variant.canResolve(finalPackage)
-          if (repackaged || (bases.has(key) && !base && !explicitVariants.has(key)))
+          if (repackaged || (entry !== undefined && !base && !hasExplicitVariants))
             providers.models.update(providerID, id, (draft) => {
               draft.variants = [...Variant.resolve({ ...draft, package: finalPackage })]
             })
-          for (const config of explicitVariants.get(key) ?? [])
+          for (const config of entry?.configs ?? [])
             applyExplicitVariants(providers.models, record.provider.package, providerID, id, config)
         }
       }
 
       sources.defaultModel = Config.latest(loaded.entries, "model")
-      sources.entries = entries
+      sources.configured = Array.from(configured.values())
     })
 
-    // Re-apply explicit config fields after external model transforms so configured values win while
-    // leaving plugin-supplied fields (including custom model variants) intact when omitted in config.
+    // Re-apply surviving explicit config fields after external model transforms so configured values win
+    // while leaving plugin-supplied fields (including custom model variants) intact when omitted in config.
     yield* ctx.model.transform((models) => {
       if (sources.defaultModel !== undefined)
         models.default.set(sources.defaultModel.providerID, sources.defaultModel.model)
-      for (const [providerID, item] of sources.entries) {
-        const seeded = models.provider.get(providerID)
-        for (const [id, config] of Object.entries(item.models ?? {})) {
-          if (!models.get(providerID, id)) {
-            const base = seeded?.models.get(id)
-            if (base) models.update(providerID, id, (model) => Object.assign(model, structuredClone(base)))
-          }
-          overlayFields(models, providerID, id, config)
-          applyExplicitVariants(models, seeded?.provider.package, providerID, id, config)
+      for (const entry of sources.configured) {
+        const seeded = models.provider.get(entry.providerID)
+        if (!models.get(entry.providerID, entry.id)) {
+          const base = seeded?.models.get(entry.id)
+          if (base) models.update(entry.providerID, entry.id, (model) => Object.assign(model, structuredClone(base)))
+        }
+        for (const config of entry.configs) {
+          overlayFields(models, entry.providerID, entry.id, config)
+          applyExplicitVariants(models, seeded?.provider.package, entry.providerID, entry.id, config)
         }
       }
     })

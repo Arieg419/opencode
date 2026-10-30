@@ -1072,6 +1072,66 @@ describe("ConfigProviderPlugin.Plugin", () => {
     }),
   )
 
+  it.effect("restarts model inheritance when a later document switches canonical provider", () =>
+    Effect.gen(function* () {
+      const providers = yield* Provider.Service
+      const models = yield* Model.Service
+      const providerID = Provider.ID.make("custom")
+      const modelID = Model.ID.make("chat")
+      yield* providers.transform((editor) => {
+        editor.update(Provider.ID.openai, (provider) => {
+          provider.package = "@opencode/ai/providers/openai"
+        })
+        editor.models.update(Provider.ID.openai, modelID, (model) => {
+          model.name = "OpenAI chat"
+          model.variants = [{ id: Model.VariantID.make("openai") }]
+        })
+        editor.update(Provider.ID.anthropic, (provider) => {
+          provider.package = "@opencode/ai/providers/anthropic"
+        })
+        editor.models.update(Provider.ID.anthropic, modelID, (model) => {
+          model.name = "Anthropic chat"
+          model.variants = [{ id: Model.VariantID.make("anthropic") }]
+        })
+      })
+      yield* addPlugin([
+        new Document({
+          type: "document",
+          info: decode({
+            providers: {
+              custom: {
+                canonical: "openai",
+                models: {
+                  chat: {
+                    name: "Doc1",
+                    headers: { doc: "1" },
+                    variants: [{ id: "old" }],
+                  },
+                },
+              },
+            },
+          }),
+        }),
+        new Document({
+          type: "document",
+          info: decode({
+            providers: {
+              custom: {
+                canonical: "anthropic",
+                models: { chat: {} },
+              },
+            },
+          }),
+        }),
+      ])
+
+      const model = required(yield* models.get(providerID, modelID))
+      expect(model.name).toBe("Anthropic chat")
+      expect(model.headers).toBeUndefined()
+      expect(model.variants.map((variant) => variant.id)).toEqual([Model.VariantID.make("anthropic")])
+    }),
+  )
+
   it.effect("builds configured reasoning variants after provider and model package normalization", () =>
     Effect.gen(function* () {
       const models = yield* Model.Service
