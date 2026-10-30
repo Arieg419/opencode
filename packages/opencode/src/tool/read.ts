@@ -59,6 +59,7 @@ type Metadata = {
   truncated: boolean
   loaded: string[]
   display?: Display
+  readRange?: { path: string; version: string; totalLines: number }
 }
 
 export const ReadTool = Tool.define<
@@ -330,6 +331,40 @@ export const ReadTool = Tool.define<
 
       const file = yield* lines(filepath, { limit: params.limit ?? DEFAULT_READ_LIMIT, offset: params.offset || 1 })
       if (file.count < file.offset && !(file.count === 0 && file.offset === 1)) {
+        const range = {
+          path: yield* fs.realPath(filepath),
+          version: [
+            stat.size,
+            Option.getOrUndefined(stat.mtime)?.getTime(),
+            Option.getOrUndefined(stat.birthtime)?.getTime(),
+            stat.dev,
+            Option.getOrUndefined(stat.ino),
+          ].join(":"),
+          totalLines: file.count,
+        }
+        yield* ctx.metadata({ metadata: { preview: "", truncated: false, loaded: [], readRange: range } })
+        // Changing offsets or rereading valid lines must not hide repeated failures on an unchanged file.
+        const boundary = ctx.messages.findLastIndex((message) => message.info.role === "user")
+        const failures = ctx.messages
+          .slice(boundary + 1)
+          .flatMap((message) => message.parts)
+          .filter((part) => {
+            if (part.type !== "tool" || part.tool !== "read" || part.state.status !== "error") return false
+            const previous = part.state.metadata?.readRange
+            return (
+              previous?.path === range.path &&
+              previous.version === range.version &&
+              previous.totalLines === range.totalLines
+            )
+          })
+        if (failures.length >= 2) {
+          yield* ctx.ask({
+            permission: "doom_loop",
+            patterns: ["read"],
+            always: ["read"],
+            metadata: { tool: "read", input: params },
+          })
+        }
         return yield* Effect.fail(
           new Error(`Offset ${file.offset} is out of range for this file (${file.count} lines)`),
         )

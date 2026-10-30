@@ -878,6 +878,99 @@ it.instance("loop continues when finish is unknown", () =>
   }),
 )
 
+it.instance("denied doom_loop stops rotating invalid reads across provider messages with successful rereads", () =>
+  Effect.gen(function* () {
+    const { dir, llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const chat = yield* sessions.create({
+      title: "Read range regression",
+      permission: [
+        { permission: "*", pattern: "*", action: "allow" },
+        { permission: "doom_loop", pattern: "*", action: "deny" },
+      ],
+    })
+    const file = path.join(dir, "lines.txt")
+    yield* writeText(file, Array.from({ length: 635 }, (_, n) => `line ${n + 1}`).join("\n"))
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "Read the file" }],
+    })
+    for (const offset of [700, 600, 900, 600, 1100]) {
+      yield* llm.tool("read", { filePath: file, offset, limit: 200 })
+    }
+    yield* llm.text("unguarded continuation")
+    yield* prompt.loop({ sessionID: chat.id })
+    const messages = yield* MessageV2.filterCompactedEffect(chat.id)
+    const reads = messages
+      .flatMap((message) => message.parts)
+      .filter((part): part is SessionV1.ToolPart => part.type === "tool" && part.tool === "read")
+    expect(reads[0].state).toMatchObject({ status: "error", metadata: { readRange: { totalLines: 635 } } })
+    expect(yield* llm.calls).toBe(5)
+    expect(reads.map((part) => part.state.status)).toEqual(["error", "completed", "error", "completed", "error"])
+    expect(reads.at(-1)?.state).toMatchObject({
+      status: "error",
+      error: expect.stringContaining("prevents you from using this specific tool call"),
+    })
+  }),
+)
+
+for (const policy of [
+  { permission: "read", action: "deny", continue: false, error: "prevents you from using this specific tool call" },
+  { permission: "doom_loop", action: "allow", continue: false, error: "Offset 1100 is out of range" },
+  { permission: "doom_loop", action: "deny", continue: true, error: "prevents you from using this specific tool call" },
+] as const) {
+  it.instance(
+    `read range recovery honors ${policy.permission}=${policy.action}, continue_loop_on_deny=${policy.continue}`,
+    () =>
+      Effect.gen(function* () {
+        const { dir, llm } = yield* useServerConfig((url) => ({
+          ...providerCfg(url),
+          experimental: { continue_loop_on_deny: policy.continue },
+        }))
+        const prompt = yield* SessionPrompt.Service
+        const sessions = yield* Session.Service
+        const chat = yield* sessions.create({
+          title: "Read policy regression",
+          permission: [
+            { permission: "*", pattern: "*", action: "allow" },
+            {
+              permission: policy.permission,
+              pattern: policy.permission === "read" ? "*lines.txt" : "*",
+              action: policy.action,
+            },
+          ],
+        })
+        const file = path.join(dir, "lines.txt")
+        yield* writeText(file, Array.from({ length: 635 }, (_, n) => `line ${n + 1}`).join("\n"))
+        yield* prompt.prompt({
+          sessionID: chat.id,
+          agent: "build",
+          noReply: true,
+          parts: [{ type: "text", text: "Read the file" }],
+        })
+        for (const offset of [700, 600, 900, 600, 1100]) {
+          yield* llm.tool("read", { filePath: file, offset, limit: 200 })
+        }
+        yield* llm.text("Changed approach")
+        const result = yield* prompt.loop({ sessionID: chat.id })
+        expect(yield* llm.calls).toBe(6)
+        expect(result.parts.some((part) => part.type === "text" && part.text === "Changed approach")).toBe(true)
+        const messages = yield* MessageV2.filterCompactedEffect(chat.id)
+        const reads = messages
+          .flatMap((message) => message.parts)
+          .filter((part): part is SessionV1.ToolPart => part.type === "tool" && part.tool === "read")
+        expect(reads.at(-1)?.state).toMatchObject({ status: "error", error: expect.stringContaining(policy.error) })
+        const last = reads.at(-1)
+        if (policy.permission === "read" && last?.state.status === "error") {
+          expect(last.state.metadata?.readRange).toBeUndefined()
+        }
+      }),
+  )
+}
+
 it.instance("glob tool keeps instance context during prompt runs", () =>
   Effect.gen(function* () {
     const { dir, llm } = yield* useServerConfig(providerCfg)

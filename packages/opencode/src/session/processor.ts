@@ -197,7 +197,14 @@ const layer = Layer.effect(
             time: { start: match.part.state.time.start, end: Date.now() },
           },
         })
-        if (error instanceof PermissionV1.RejectedError || error instanceof Question.RejectedError) {
+        if (
+          error instanceof PermissionV1.RejectedError ||
+          error instanceof Question.RejectedError ||
+          // Read publishes this marker only after an invalid range, before asking doom_loop.
+          (error instanceof PermissionV1.DeniedError &&
+            match.part.tool === "read" &&
+            match.part.state.metadata?.readRange)
+        ) {
           ctx.blocked = ctx.shouldBreak
         }
         yield* settleToolCall(toolCallID)
