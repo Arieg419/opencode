@@ -241,6 +241,29 @@ const execution = Effect.fn("ReadRangeTest.execution")(function* (
 })
 
 describe("ReadTool invalid range history", () => {
+  it.live("gates after a parallel pair settles without duplicate terminal calls or session leakage", () =>
+    Effect.gen(function* () {
+      const current = yield* fixture
+      yield* current.rules("deny")
+      const message = yield* current.message
+      const results = yield* Effect.all([message.read(100), message.read(200)], { concurrency: 2 })
+      expect(results.map((error) => error?.metadata?.readRangeBlocked)).toEqual([undefined, undefined])
+      expect(yield* message.read(300)).toMatchObject({ metadata: { readRangeBlocked: true } })
+      const stored = yield* SessionStore.Service.use((store) => store.message(message.id))
+      expect(stored?.message.type).toBe("assistant")
+      if (stored?.message.type === "assistant") {
+        const calls = stored.message.content.filter((part) => part.type === "tool")
+        expect(calls.map((call) => call.id)).toEqual(["read-0", "read-1", "read-2"])
+        expect(calls.map((call) => call.state.status)).toEqual(["error", "error", "error"])
+      }
+      const other = yield* fixture
+      yield* other.rules("deny")
+      const otherMessage = yield* other.message
+      expect(yield* otherMessage.read(400)).toMatchObject({
+        message: "Offset 400 is out of range for this file (1 line)",
+      })
+    }),
+  )
   for (const action of ["reject", "shutdown"] as const) {
     it.live(`${action} settles the actual execution claim and terminal events`, () =>
       Effect.gen(function* () {
