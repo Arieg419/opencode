@@ -133,6 +133,8 @@ const generalSchema = Persistence.struct({
   foldUserMessages: Schema.Boolean,
   // The redesigned keyboard-first question dock, off until it ships.
   newQuestionUI: Schema.Boolean,
+  // Voice calls with GPT-Live from the composer, off until they ship.
+  voiceCalls: Schema.Boolean,
   mobileTitlebarPosition: Schema.Literals(["top", "bottom"]),
   // Owned by the review plugin, which copies it out once; kept so settings rewrites cannot drop it first.
   mobileDiffWrap: Persistence.optional(Schema.Boolean),
@@ -306,6 +308,7 @@ export const defaultSettings: Settings = {
     newIcons: false,
     foldUserMessages: false,
     newQuestionUI: false,
+    voiceCalls: false,
     mobileTitlebarPosition: "top",
     followUpBehavior: "steer",
   },
@@ -423,6 +426,10 @@ export const { use: useSettings, provider: SettingsProvider } = createSimpleCont
         newQuestionUI: withFallback(() => store.general?.newQuestionUI, defaultSettings.general.newQuestionUI),
         setNewQuestionUI(value: boolean) {
           setStore("general", "newQuestionUI", value)
+        },
+        voiceCalls: withFallback(() => store.general?.voiceCalls, defaultSettings.general.voiceCalls),
+        setVoiceCalls(value: boolean) {
+          setStore("general", "voiceCalls", value)
         },
         mobileTitlebarPosition: withFallback(
           () => store.general?.mobileTitlebarPosition,

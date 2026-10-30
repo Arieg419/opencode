@@ -157,7 +157,7 @@ export class VoiceTransport {
     this.stream = stream
     this.input = this.analyser(stream)
     await sender.replaceTrack(stream.getAudioTracks()[0])
-    this.timer = setInterval(() => this.inputOptions.levels(this.level(this.input), this.level(this.output)), 100)
+    this.timer = setInterval(() => this.inputOptions.levels(this.level(this.input), this.level(this.output)), 50)
   }
 
   send(event: VoiceClientEvent) {

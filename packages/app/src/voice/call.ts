@@ -12,7 +12,8 @@ export type CallState = {
   status: "idle" | "connecting" | "connected" | "dropped"
   failure?: "unavailable" | "microphone" | "dropped" | "connection"
   muted: boolean
-  level: number
+  /** When the call last connected, for its duration. */
+  since?: number
   caption: string
   speaker: "user" | "assistant"
   utterance?: number
@@ -37,6 +38,8 @@ export function createVoiceCall(input: {
   /** Session IDs with an open tab. */
   tabs: () => string[]
   change: (state: Partial<CallState>) => void
+  /** Microphone and speaker levels several times a second; kept out of reactive state. */
+  levels: (mic: number, speaker: number) => void
 }) {
   const tail = new TranscriptTail()
   let gates = new VoiceGates()
@@ -100,7 +103,8 @@ export function createVoiceCall(input: {
     state.ready = false
     delegations.forEach((delegation) => tail.release(delegation.id))
     delegations.clear()
-    input.change({ status: "dropped", failure, level: 0 })
+    input.levels(0, 0)
+    input.change({ status: "dropped", failure })
     void state.transport?.close()
     void input.platform.setVoiceCallActive?.(false).catch(() => undefined)
   }
@@ -133,7 +137,7 @@ export function createVoiceCall(input: {
       levels: (mic, speaker) => {
         gates.user(!state.muted && mic > 0.015)
         gates.assistant(speaker > 0.005)
-        input.change({ level: Math.min(1, (state.muted ? speaker : Math.max(mic, speaker)) * 5) })
+        input.levels(state.muted ? 0 : mic, speaker)
       },
       dropped: () => {
         if (state.transport === transport) drop()
@@ -154,7 +158,7 @@ export function createVoiceCall(input: {
     // Navigation while connecting must reach the newly ready backend too.
     view(state.viewing)
     tools.replies.sessions.forEach((id) => dirty.add(id))
-    input.change({ status: "connected", muted: state.muted })
+    input.change({ status: "connected", muted: state.muted, since: Date.now() })
   }
 
   function eventReceived(event: VoiceEvent, transport: VoiceTransport) {

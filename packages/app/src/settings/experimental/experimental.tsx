@@ -64,6 +64,20 @@ export const SettingsExperimental: Component = () => {
                 </Switch>
               </div>
             </SettingsRow>
+            <SettingsRow
+              title={language.t("settings.experimental.row.voiceCalls.title")}
+              description={language.t("settings.experimental.row.voiceCalls.description")}
+            >
+              <div data-action="settings-voice-calls">
+                <Switch
+                  checked={settings.general.voiceCalls()}
+                  onChange={(checked) => settings.general.setVoiceCalls(checked)}
+                  hideLabel
+                >
+                  {language.t("settings.experimental.row.voiceCalls.title")}
+                </Switch>
+              </div>
+            </SettingsRow>
           </SettingsList>
         </div>
       </div>
