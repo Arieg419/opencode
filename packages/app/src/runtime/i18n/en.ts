@@ -20,6 +20,7 @@ export const dict = {
   "voice.failure.dropped": "The call disconnected.",
   "voice.failure.connection": "Couldn’t connect the call.",
   "voice.setup": "Set up",
+  "voice.return": "Return to the call’s session",
   "voice.onboarding.eyebrow": "Voice calls",
   "voice.onboarding.title": "Talk to your sessions",
   "voice.onboarding.description":

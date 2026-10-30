@@ -28,6 +28,8 @@ export const { provider: VoiceProvider, use: useVoice } = createSimpleContext({
         captions: { utterance: number; speaker: CallState["speaker"]; text: string }[]
         /** Whether the transcript above the composer is open. */
         transcript: boolean
+        /** Composers on the call's server now on screen; with none, the floating call shows instead. */
+        composers: number
       }
     >({
       status: "idle",
@@ -37,14 +39,14 @@ export const { provider: VoiceProvider, use: useVoice } = createSimpleContext({
       title: "",
       captions: [],
       transcript: false,
+      composers: 0,
     })
 
     // Written by the call several times a second and read by the scope every frame, so it stays out of the store.
     const meter = { mic: 0, speaker: 0 }
 
-    const current: { call?: ReturnType<typeof createVoiceCall>; generation: number } = { generation: 0 }
-    // Where the latest call was placed and the session it follows, for setting it up again after it drops.
-    const target: { server?: ServerConnection.Key; ctx?: ServerCtx; session?: SessionInfo } = {}
+    const current: CurrentCall = { generation: 0 }
+    const target: CallPlacement = {}
     const dialog = useDialog()
 
     const [onboarding, setOnboarding] = persisted(
@@ -129,17 +131,7 @@ export const { provider: VoiceProvider, use: useVoice } = createSimpleContext({
             ctx,
             session,
             platform,
-            open: async (next, signal) => {
-              const href = sessionHref(server, next.id)
-              // Subagent sessions open inside their root session's tab, which the titlebar finds from the route.
-              const tab =
-                findSessionTab(tabs.store, server, next.id) ??
-                (next.parentID ? undefined : tabs.addSessionTab({ server, sessionId: next.id }))
-
-              if (tab) tabs.remember(tab)
-              navigate(href)
-              await routed(href, signal)
-            },
+            open: (next, signal) => routed(show(server, next), signal),
             tabs: () =>
               tabs.store.flatMap((tab) => (tab.type === "session" && tab.server === server ? [tab.sessionId] : [])),
             change: (change) => {
@@ -158,6 +150,21 @@ export const { provider: VoiceProvider, use: useVoice } = createSimpleContext({
         .catch(() => {
           if (current.generation === generation) setState({ status: "dropped", failure: "connection" })
         })
+    }
+
+    // Shows a session in its tab and returns its route.
+    const show = (server: ServerConnection.Key, session: SessionInfo) => {
+      const href = sessionHref(server, session.id)
+
+      // Subagent sessions open inside their root session's tab, which the titlebar finds from the route.
+      const tab =
+        findSessionTab(tabs.store, server, session.id) ??
+        (session.parentID ? undefined : tabs.addSessionTab({ server, sessionId: session.id }))
+
+      if (tab) tabs.remember(tab)
+      navigate(href)
+
+      return href
     }
 
     // The first call opens the onboarding screen; later ones start at once. A call the server can't place opens it
@@ -193,6 +200,15 @@ export const { provider: VoiceProvider, use: useVoice } = createSimpleContext({
         if (onboarding.done) return void start(server, ctx, session)
         onboard(server, ctx, session)
       },
+      /** Counts a composer on the call's server while it's on screen. */
+      attach() {
+        setState("composers", (count) => count + 1)
+        onCleanup(() => setState("composers", (count) => count - 1))
+      },
+      /** Shows the session the call follows. */
+      reopen() {
+        if (target.server && target.session) show(target.server, target.session)
+      },
       setup() {
         const server = target.server
         const ctx = target.ctx
@@ -204,3 +220,8 @@ export const { provider: VoiceProvider, use: useVoice } = createSimpleContext({
     }
   },
 })
+
+type CurrentCall = { call?: ReturnType<typeof createVoiceCall>; generation: number }
+
+/** Where the latest call was placed and the session it follows, for showing or setting it up again. */
+type CallPlacement = { server?: ServerConnection.Key; ctx?: ServerCtx; session?: SessionInfo }

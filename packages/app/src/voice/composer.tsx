@@ -32,6 +32,11 @@ export function VoiceComposer(props: ParentProps<{ session: SessionInfo | undefi
     if (session && voice.state.server === server.key) voice.view(server.key, session)
   })
 
+  // While this composer shows the call, the floating call steps aside.
+  createEffect(() => {
+    if (active()) voice.attach()
+  })
+
   return (
     <>
       <Show when={active() && voice.state.transcript}>
@@ -39,6 +44,69 @@ export function VoiceComposer(props: ParentProps<{ session: SessionInfo | undefi
       </Show>
       {props.children}
     </>
+  )
+}
+
+/**
+ * A live call when no composer on its server is on screen (the new-session page, settings, another server): what it's
+ * following, the time, Mute and End, and a way back to its session.
+ */
+export function VoiceCallPill() {
+  const voice = useVoice()
+  const language = useLanguage()
+  const muteLabel = () => language.t(voice.state.muted ? "voice.unmute" : "voice.mute")
+  const dropped = () => voice.state.status === "dropped"
+
+  return (
+    <Show when={voice.state.status !== "idle" && voice.state.composers === 0}>
+      <section class="voice-call-pill" role="group" aria-label={language.t("voice.panel")}>
+        <button
+          type="button"
+          class="voice-call-pill-return"
+          aria-label={language.t("voice.return")}
+          onClick={() => voice.reopen()}
+        >
+          <span class="voice-call-pill-scope">
+            <VoiceScope meter={voice.meter} status={voice.state.status} muted={voice.state.muted} />
+          </span>
+          <span class="voice-call-pill-title">
+            {dropped() ? language.t(`voice.failure.${voice.state.failure ?? "dropped"}`) : voice.state.title}
+          </span>
+        </button>
+        <span class="voice-call-time" role="status">
+          <Show when={voice.state.status === "connecting"}>{language.t("voice.connecting")}</Show>
+          <Show when={voice.state.status === "connected" && voice.state.since} keyed>
+            {(since) => <Elapsed since={since} />}
+          </Show>
+        </span>
+        <Tooltip placement="top" value={muteLabel()}>
+          <IconButton
+            type="button"
+            size="large"
+            variant="ghost"
+            class="voice-call-toggle"
+            data-muted={voice.state.muted ? "" : undefined}
+            disabled={voice.state.status !== "connected"}
+            aria-pressed={voice.state.muted}
+            aria-label={muteLabel()}
+            icon={<Icon name={voice.state.muted ? "microphone-off" : "microphone"} />}
+            onClick={voice.mute}
+          />
+        </Tooltip>
+        <Tooltip placement="top" value={language.t(dropped() ? "voice.close" : "voice.end")}>
+          <IconButton
+            type="button"
+            size="large"
+            variant="ghost"
+            class="voice-call-end"
+            data-dropped={dropped() ? "" : undefined}
+            aria-label={language.t(dropped() ? "voice.close" : "voice.end")}
+            icon={<Icon name={dropped() ? "close" : "phone-hangup"} />}
+            onClick={() => void voice.end()}
+          />
+        </Tooltip>
+      </section>
+    </Show>
   )
 }
 
