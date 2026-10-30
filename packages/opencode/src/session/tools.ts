@@ -23,6 +23,7 @@ import { ProviderV2 } from "@opencode-ai/core/provider"
 import { ModelV2 } from "@opencode-ai/core/model"
 import { isRecord } from "@/util/record"
 import { RuntimeFlags } from "@/effect/runtime-flags"
+import { AppProcess } from "@opencode-ai/core/process"
 
 const MCP_RESOURCE_TOOLS = {
   list: "list_mcp_resources",
@@ -79,14 +80,18 @@ export const resolve = Effect.fn("SessionTools.resolve")(function* (input: {
         }
       }),
     ask: (req) =>
-      permission
-        .ask({
+      Effect.gen(function* () {
+        const signal = options.abortSignal
+        signal?.throwIfAborted()
+        const request = permission.ask({
           ...req,
           sessionID: input.session.id,
           tool: { messageID: input.processor.message.id, callID: options.toolCallId },
           ruleset: Permission.merge(input.agent.permission, input.session.permission ?? []),
         })
-        .pipe(Effect.orDie),
+        yield* signal ? Effect.raceFirst(request, AppProcess.waitForAbort(signal)) : request
+        signal?.throwIfAborted()
+      }).pipe(Effect.orDie),
   })
 
   for (const item of yield* registry.tools({

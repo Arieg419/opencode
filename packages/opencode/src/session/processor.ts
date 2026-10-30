@@ -24,6 +24,7 @@ import { errorMessage } from "@/util/error"
 import { isRecord } from "@/util/record"
 import { EventV2Bridge } from "@/event-v2-bridge"
 import { Usage, type LLMEvent } from "@opencode-ai/llm"
+import { AppProcess } from "@opencode-ai/core/process"
 
 const DOOM_LOOP_THRESHOLD = 3
 const DOOM_LOOP_MESSAGES = 16
@@ -299,6 +300,14 @@ const layer = Layer.effect(
         )
           return
 
+        // Read's version-aware range gate owns repeated invalid ranges.
+        if (
+          name === "read" &&
+          !call.part.metadata?.providerExecuted &&
+          recentParts.slice(0, -1).every((part) => part.state.status === "error" && part.state.metadata?.readRange)
+        )
+          return
+
         const agent = yield* agents.get(ctx.assistantMessage.agent)
         const current = yield* session.get(ctx.sessionID)
         yield* permission
@@ -326,13 +335,7 @@ const layer = Layer.effect(
         const signal = input.abort
         if (!signal) return yield* gate.pipe(Effect.orDie)
         signal.throwIfAborted()
-        const aborted = Effect.callback<never, DOMException>((resume) => {
-          const abort = () => resume(Effect.fail(new DOMException("Aborted", "AbortError")))
-          signal.addEventListener("abort", abort, { once: true })
-          if (signal.aborted) abort()
-          return Effect.sync(() => signal.removeEventListener("abort", abort))
-        })
-        yield* Effect.raceFirst(gate, aborted).pipe(Effect.orDie)
+        yield* Effect.raceFirst(gate, AppProcess.waitForAbort(signal)).pipe(Effect.orDie)
         signal.throwIfAborted()
       })
 
@@ -418,7 +421,7 @@ const layer = Layer.effect(
             }
             yield* ensureToolCall(value)
             const input = isRecord(value.input) ? value.input : { value: value.input }
-            yield* updateToolCall(value.id, (match) => ({
+            const call = yield* updateToolCall(value.id, (match) => ({
               ...match,
               tool: value.name,
               state:
@@ -434,6 +437,8 @@ const layer = Layer.effect(
                 : value.providerMetadata,
             }))
 
+            // Remote execution has already occurred; retain its event-time policy gate.
+            if (call?.metadata?.providerExecuted) yield* gateToolCall(value.name, value.input, value.id)
             return
           }
 

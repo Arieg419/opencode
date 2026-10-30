@@ -1007,6 +1007,45 @@ it.instance("cancelling a pending doom loop permission removes it and prevents l
   }),
 )
 
+it.instance("cancelling a pending invalid-range permission removes it", () =>
+  Effect.gen(function* () {
+    const { dir, llm } = yield* useServerConfig(providerCfg)
+    const prompt = yield* SessionPrompt.Service
+    const sessions = yield* Session.Service
+    const permission = yield* Permission.Service
+    const status = yield* SessionStatus.Service
+    const chat = yield* sessions.create({
+      title: "Cancelled range permission",
+      permission: [
+        { permission: "*", pattern: "*", action: "allow" },
+        { permission: "doom_loop", pattern: "*", action: "ask" },
+      ],
+    })
+    const file = path.join(dir, "lines.txt")
+    yield* writeText(file, "one\ntwo\nthree")
+    yield* prompt.prompt({
+      sessionID: chat.id,
+      agent: "build",
+      noReply: true,
+      parts: [{ type: "text", text: "Read fixture" }],
+    })
+    for (const offset of [10, 11, 12]) yield* llm.tool("read", { filePath: file, offset, limit: 200 })
+    const fiber = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+    const request = yield* pollWithTimeout(
+      permission.list().pipe(Effect.map((requests) => requests.find((request) => request.permission === "doom_loop"))),
+      "range permission request",
+      "10 seconds",
+    )
+    yield* prompt.cancel(chat.id)
+    yield* Fiber.join(fiber)
+    expect(yield* permission.list()).toEqual([])
+    expect(Exit.isFailure(yield* permission.reply({ requestID: request.id, reply: "once" }).pipe(Effect.exit))).toBe(
+      true,
+    )
+    expect(yield* status.get(chat.id)).toMatchObject({ type: "idle" })
+  }),
+)
+
 it.instance("a new user message resets repeated edit detection", () =>
   Effect.gen(function* () {
     const { dir, llm } = yield* useServerConfig(providerCfg)
@@ -1046,6 +1085,59 @@ it.instance("a new user message resets repeated edit detection", () =>
     expect(yield* llm.calls).toBe(6)
   }),
 )
+
+for (const range of [
+  { offset: 10, status: "error" },
+  { offset: 1, status: "completed" },
+] as const) {
+  it.instance(`a third identical ${range.status === "error" ? "invalid" : "valid"} read asks only once`, () =>
+    Effect.gen(function* () {
+      const { dir, llm } = yield* useServerConfig(providerCfg)
+      const prompt = yield* SessionPrompt.Service
+      const sessions = yield* Session.Service
+      const permission = yield* Permission.Service
+      const chat = yield* sessions.create({
+        title: "Read permission overlap",
+        permission: [
+          { permission: "*", pattern: "*", action: "allow" },
+          { permission: "doom_loop", pattern: "*", action: "ask" },
+        ],
+      })
+      const file = path.join(dir, "lines.txt")
+      yield* writeText(file, "one\ntwo\nthree")
+      yield* prompt.prompt({
+        sessionID: chat.id,
+        agent: "build",
+        noReply: true,
+        parts: [{ type: "text", text: "Read fixture" }],
+      })
+      for (let i = 0; i < 3; i++) yield* llm.tool("read", { filePath: file, offset: range.offset, limit: 200 })
+      yield* llm.text("finished")
+      const fiber = yield* prompt.loop({ sessionID: chat.id }).pipe(Effect.forkChild)
+      const observe = pollWithTimeout(
+        Effect.gen(function* () {
+          const request = (yield* permission.list()).find((request) => request.permission === "doom_loop")
+          if (request) return { request }
+          if ((yield* llm.calls) >= 4) return { request: undefined }
+        }),
+        "read permission or completion",
+        "10 seconds",
+      )
+      const first = yield* observe
+      if (first.request) yield* permission.reply({ requestID: first.request.id, reply: "once" })
+      const next = yield* observe
+      if (next.request) yield* permission.reply({ requestID: next.request.id, reply: "reject" })
+      yield* Fiber.join(fiber)
+      expect(first.request).toBeDefined()
+      expect(next.request).toBeUndefined()
+      expect(yield* llm.calls).toBe(4)
+      const reads = (yield* MessageV2.filterCompactedEffect(chat.id))
+        .flatMap((message) => message.parts)
+        .filter((part): part is SessionV1.ToolPart => part.type === "tool" && part.tool === "read")
+      expect(reads.map((part) => part.state.status)).toEqual([range.status, range.status, range.status])
+    }),
+  )
+}
 
 it.instance("denied doom_loop stops rotating invalid reads across provider messages with successful rereads", () =>
   Effect.gen(function* () {
