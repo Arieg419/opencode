@@ -179,7 +179,7 @@ export const GithubCopilotPlugin = define({
       const credential = connection
         ? yield* ctx.integration.connection.resolve(connection).pipe(Effect.orElseSucceed(() => undefined))
         : undefined
-      if (credential?.type !== "oauth") {
+      if (!connection || credential?.type !== "oauth") {
         loaded.baseURL = undefined
         loaded.token = undefined
         loaded.models = undefined
@@ -192,16 +192,22 @@ export const GithubCopilotPlugin = define({
       const headers = (yield* providers.get(Provider.ID.githubCopilot))?.headers
       const remote = yield* remoteModels.use({
         key: `github-copilot:${IntegrationConnection.key(connection)}:${url}:${Hash.fast(JSON.stringify(headers ?? {}))}`,
-        load: Effect.tryPromise({
-          try: () =>
-            CopilotModels.load(url, {
-              ...headers,
-              Authorization: `Bearer ${credential.refresh}`,
-              "User-Agent": App.useragent(ctx.app),
-              "X-GitHub-Api-Version": apiVersion,
-            }),
-          catch: (cause) => cause,
-        }),
+        load: ctx.integration.connection.resolve(connection).pipe(
+          Effect.flatMap((current) =>
+            current?.type === "oauth"
+              ? Effect.tryPromise({
+                  try: () =>
+                    CopilotModels.load(url, {
+                      ...headers,
+                      Authorization: `Bearer ${current.refresh}`,
+                      "User-Agent": App.useragent(ctx.app),
+                      "X-GitHub-Api-Version": apiVersion,
+                    }),
+                  catch: (cause) => cause,
+                })
+              : Effect.fail(new Error("GitHub Copilot connection has no OAuth credential")),
+          ),
+        ),
       })
       if (
         IntegrationConnection.key(connection) !==

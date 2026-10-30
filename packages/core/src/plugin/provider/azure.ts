@@ -313,7 +313,12 @@ export function make(
         const found = yield* remoteDeployments.use({
           key: `azure:${IntegrationConnection.key(connection)}:${url}`,
           // Azure promises no order; normalize it so a reordered response does not rebuild the model list.
-          load: deployments(url, name, credential).pipe(
+          load: ctx.integration.connection.resolve(connection).pipe(
+            Effect.flatMap((current) =>
+              !current || current.type === "oauth" || (current.type === "external" && current.methodID !== methodID)
+                ? Effect.fail(new Error("Azure connection has no usable credential"))
+                : deployments(url, name, current),
+            ),
             Effect.map((list) => list.toSorted((a, b) => a.name.localeCompare(b.name))),
           ),
         })

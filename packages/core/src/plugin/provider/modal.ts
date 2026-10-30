@@ -42,9 +42,17 @@ export const ModalPlugin = define({
       }
       const remote = yield* remoteModels.use({
         key: `modal:${credential?.type === "key" ? IntegrationConnection.key(connection) : "env:MODAL_PROXY_TOKEN"}:${baseURL}`,
-        load: Effect.tryPromise({
-          try: () => ModalModels.load(baseURL, apiKey),
-          catch: (cause) => cause,
+        load: Effect.gen(function* () {
+          const current =
+            connection && credential?.type === "key" ? yield* ctx.integration.connection.resolve(connection) : undefined
+          const key =
+            credential?.type === "key"
+              ? current?.type === "key"
+                ? current.key
+                : undefined
+              : process.env.MODAL_PROXY_TOKEN
+          if (!key) return yield* Effect.fail(new Error("Modal connection has no API key"))
+          return yield* Effect.tryPromise({ try: () => ModalModels.load(baseURL, key), catch: (cause) => cause })
         }),
       })
       if (

@@ -129,7 +129,7 @@ export const DigitalOceanPlugin = define({
         ? yield* ctx.integration.connection.resolve(connection).pipe(Effect.orElseSucceed(() => undefined))
         : undefined
       const key = `digitalocean:${IntegrationConnection.key(connection)}`
-      const valid = credential?.type === "oauth" && credential.methodID === methodID
+      const valid = connection !== undefined && credential?.type === "oauth" && credential.methodID === methodID
       if (!valid || loaded.key !== key) {
         loaded.key = undefined
         loaded.routers = []
@@ -140,19 +140,26 @@ export const DigitalOceanPlugin = define({
       if (credential.expires !== 0 && credential.expires <= (yield* Clock.currentTimeMillis)) return
       const result = yield* routers.use({
         key,
-        load: http
-          .execute(
-            HttpClientRequest.get(routersEndpoint).pipe(
-              HttpClientRequest.bearerToken(credential.access),
-              HttpClientRequest.acceptJson,
-              HttpClientRequest.setHeader("User-Agent", App.useragent(ctx.app)),
-            ),
-          )
-          .pipe(
-            Effect.flatMap(HttpClientResponse.schemaBodyJson(RoutersResponse)),
-            Effect.map((response) => response.model_routers),
-            Effect.timeout("10 seconds"),
-          ),
+        load: Effect.gen(function* () {
+          const current = yield* ctx.integration.connection.resolve(connection)
+          if (current?.type !== "oauth" || current.methodID !== methodID)
+            return yield* Effect.fail(new Error("DigitalOcean connection has no OAuth credential"))
+          if (current.expires !== 0 && current.expires <= (yield* Clock.currentTimeMillis))
+            return yield* Effect.fail(new Error("DigitalOcean access token expired"))
+          return yield* http
+            .execute(
+              HttpClientRequest.get(routersEndpoint).pipe(
+                HttpClientRequest.bearerToken(current.access),
+                HttpClientRequest.acceptJson,
+                HttpClientRequest.setHeader("User-Agent", App.useragent(ctx.app)),
+              ),
+            )
+            .pipe(
+              Effect.flatMap(HttpClientResponse.schemaBodyJson(RoutersResponse)),
+              Effect.map((response) => response.model_routers),
+              Effect.timeout("10 seconds"),
+            )
+        }),
       })
       loaded.key = key
       loaded.routers = result ?? []
