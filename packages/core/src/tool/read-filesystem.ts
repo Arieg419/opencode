@@ -83,6 +83,7 @@ export class TextPage extends Schema.Class<TextPage>("ReadTool.TextPage")({
   content: Schema.String,
   mime: Schema.String,
   offset: PositiveInt,
+  lines: NonNegativeInt.annotate({ description: "The number of selected lines, including blank lines." }),
   truncated: Schema.Boolean,
   next: Schema.optionalKey(PositiveInt),
 }) {}
@@ -250,6 +251,7 @@ const makeTextPage = Effect.fnUntraced(function* (
     content: result.entries.join("\n"),
     mime: mimeType(input),
     offset: result.offset,
+    lines: result.entries.length,
     truncated: result.next !== undefined,
     ...(result.next === undefined ? {} : { next: result.next }),
   })
