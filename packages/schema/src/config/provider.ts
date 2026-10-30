@@ -58,8 +58,19 @@ class Limit extends Schema.Class<Limit>("Config.Model.Limit")({
 }) {}
 
 // models.dev v2's `capabilities.reasoning`. OpenCode builds the model's variants from it; no control means none.
-export const Reasoning = Model.Reasoning.annotate({ identifier: "Config.Model.Reasoning" })
-export type Reasoning = Model.Reasoning
+export const Reasoning = Schema.Union([
+  Schema.Struct({ supported: Schema.Literal(false) }),
+  Schema.Struct({
+    supported: Schema.Literal(true),
+    toggle: Schema.Boolean.pipe(optional),
+    effort: Schema.String.pipe(Schema.Array, optional),
+    budget: Schema.Struct({
+      min: Schema.Int.pipe(optional),
+      max: Schema.Int.pipe(optional),
+    }).pipe(optional),
+  }),
+]).annotate({ identifier: "Config.Model.Reasoning" })
+export type Reasoning = typeof Reasoning.Type
 
 class ModelConfig extends Schema.Class<ModelConfig>("Config.Model")({
   modelID: ID.pipe(optional),

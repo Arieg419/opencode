@@ -1,5 +1,6 @@
 export * as Variant from "./variant.js"
 
+import { ConfigProvider } from "@opencode/schema/config/provider"
 import { Model } from "./model.js"
 import { Provider } from "./provider.js"
 
@@ -9,7 +10,7 @@ export type Support =
   | { readonly type: "budget_tokens"; readonly min?: number; readonly max?: number }
 
 /** Reasoning controls in models.dev v2's shape, where `default` is the provider default rather than a variant. */
-export function supports(reasoning: Model.Reasoning): readonly Support[] {
+export function supports(reasoning: ConfigProvider.Reasoning): readonly Support[] {
   if (!reasoning.supported) return []
   return [
     ...(reasoning.toggle ? [{ type: "toggle" as const }] : []),

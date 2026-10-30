@@ -19476,9 +19476,6 @@
           },
           "temperature": {
             "type": "boolean"
-          },
-          "reasoning": {
-            "$ref": "#/components/schemas/Model.Reasoning"
           }
         },
         "required": ["tools", "input", "output"],
@@ -19684,57 +19681,6 @@
       "Model.MediaInput": {
         "type": "string",
         "enum": ["assets", "state", "root"]
-      },
-      "Model.Reasoning": {
-        "anyOf": [
-          {
-            "type": "object",
-            "properties": {
-              "supported": {
-                "type": "boolean",
-                "enum": [false]
-              }
-            },
-            "required": ["supported"],
-            "additionalProperties": false
-          },
-          {
-            "type": "object",
-            "properties": {
-              "supported": {
-                "type": "boolean",
-                "enum": [true]
-              },
-              "toggle": {
-                "type": "boolean"
-              },
-              "effort": {
-                "type": "array",
-                "items": {
-                  "type": "string"
-                }
-              },
-              "budget": {
-                "type": "object",
-                "properties": {
-                  "min": {
-                    "type": "integer",
-                    "minimum": -9007199254740991,
-                    "maximum": 9007199254740991
-                  },
-                  "max": {
-                    "type": "integer",
-                    "minimum": -9007199254740991,
-                    "maximum": 9007199254740991
-                  }
-                },
-                "additionalProperties": false
-              }
-            },
-            "required": ["supported"],
-            "additionalProperties": false
-          }
-        ]
       },
       "Model.ReasoningField": {
         "anyOf": [

@@ -25,9 +25,6 @@ export type ReasoningField = Model.ReasoningField
 export const Compatibility = Model.Compatibility
 export type Compatibility = Model.Compatibility
 
-export const Reasoning = Model.Reasoning
-export type Reasoning = Model.Reasoning
-
 export const Capabilities = Model.Capabilities
 export type Capabilities = Model.Capabilities
 
@@ -39,18 +36,6 @@ export const mergeCapabilities = (config: Partial<Capabilities>, base: Capabilit
     input: [...(config.input ?? fallback.input)],
     output: [...(config.output ?? fallback.output)],
     temperature: config.temperature ?? base?.temperature,
-    reasoning: cloneReasoning(config.reasoning ?? base?.reasoning),
-  }
-}
-
-function cloneReasoning(reasoning: Reasoning | undefined) {
-  if (reasoning === undefined) return undefined
-  if (!reasoning.supported) return { supported: false as const }
-  return {
-    supported: true as const,
-    toggle: reasoning.toggle,
-    effort: reasoning.effort && [...reasoning.effort],
-    budget: reasoning.budget && { ...reasoning.budget },
   }
 }
 

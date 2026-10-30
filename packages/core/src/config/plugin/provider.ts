@@ -35,7 +35,7 @@ type TouchedModel = {
   base: Model.Info | undefined
   readonly hadVariants: boolean
   packageConfigured: boolean
-  reasoning?: Model.Reasoning
+  reasoning?: ConfigProvider.Reasoning
   readonly variants: NonNullable<ModelConfig["variants"]>[]
 }
 
@@ -194,7 +194,7 @@ export const Plugin = define({
           if (!base || model.package !== undefined || base.variants.length === 0) continue
           if (touched.has(`${providerID}\0${model.id}`)) continue
           models.update(providerID, model.id, (draft) => {
-            draft.variants = [...resolveModelVariants(draft, providerPackage)]
+            draft.variants = [...Variant.resolve({ ...draft, package: providerPackage })]
           })
         }
       }
@@ -271,11 +271,6 @@ export function integrate(providers: ProviderEditor, document: ConfigIntegration
   }
 }
 
-function resolveModelVariants(model: Model.Info, packageName: string | undefined) {
-  const supports = model.capabilities.reasoning ? Variant.supports(model.capabilities.reasoning) : undefined
-  return Variant.resolve({ ...model, package: packageName }, supports)
-}
-
 function reconcileVariants(models: ModelEditor, state: TouchedModel, origin: OriginProvider | undefined) {
   const providerPackage = models.provider.get(state.providerID)?.provider.package
   const finalPackage = models.get(state.providerID, state.id)?.package ?? providerPackage
@@ -296,7 +291,7 @@ function reconcileVariants(models: ModelEditor, state: TouchedModel, origin: Ori
     Variant.canResolve(finalPackage)
   if (repackaged) {
     models.update(state.providerID, state.id, (model) => {
-      model.variants = [...resolveModelVariants(model, finalPackage)]
+      model.variants = [...Variant.resolve({ ...model, package: finalPackage })]
     })
     return
   }

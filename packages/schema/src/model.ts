@@ -74,21 +74,6 @@ export const Overlays = {
   body: Schema.Record(Schema.String, Schema.Any).pipe(optional),
 }
 
-// models.dev v2's `capabilities.reasoning`. OpenCode builds the model's variants from it; no control means none.
-export type Reasoning = typeof Reasoning.Type
-export const Reasoning = Schema.Union([
-  Schema.Struct({ supported: Schema.Literal(false) }),
-  Schema.Struct({
-    supported: Schema.Literal(true),
-    toggle: Schema.Boolean.pipe(optional),
-    effort: Schema.String.pipe(Schema.Array, optional),
-    budget: Schema.Struct({
-      min: Schema.Int.pipe(optional),
-      max: Schema.Int.pipe(optional),
-    }).pipe(optional),
-  }),
-]).annotate({ identifier: "Model.Reasoning" })
-
 export interface Capabilities extends Schema.Schema.Type<typeof Capabilities> {}
 export const Capabilities = Schema.Struct({
   tools: Schema.Boolean,
@@ -96,7 +81,6 @@ export const Capabilities = Schema.Struct({
   output: Schema.Array(Schema.String),
   /** Whether the model accepts a sampling temperature. Unknown when unset. */
   temperature: Schema.Boolean.pipe(optional),
-  reasoning: Reasoning.pipe(optional),
 })
   .annotate({ identifier: "Model.Capabilities" })
   .pipe(

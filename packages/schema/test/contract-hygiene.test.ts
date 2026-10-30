@@ -183,7 +183,6 @@ describe("contract hygiene", () => {
       Mcp.ResourceContentPart,
       Mcp.ResourceContent,
       Model.Ref,
-      Model.Reasoning,
       Model.Capabilities,
       Model.Cost,
       Model.Settings,

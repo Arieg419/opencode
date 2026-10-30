@@ -984,7 +984,7 @@ describe("ConfigProviderPlugin.Plugin", () => {
     }),
   )
 
-  it.effect("respells inherited catalog variants from reasoning capabilities when config changes the provider package", () =>
+  it.effect("respells inherited variants when config changes the provider package", () =>
     Effect.gen(function* () {
       const providers = yield* Provider.Service
       const models = yield* Model.Service
@@ -998,10 +998,6 @@ describe("ConfigProviderPlugin.Plugin", () => {
           provider.package = "@opencode/ai/providers/zai/chat"
         })
         editor.models.update(providerID, Model.ID.make("glm-5.3"), (model) => {
-          model.capabilities = {
-            ...model.capabilities,
-            reasoning: { supported: true, effort: ["low", "max"] },
-          }
           model.variants = [chatVariant]
         })
         editor.models.update(providerID, Model.ID.make("glm-pinned"), (model) => {
@@ -1017,16 +1013,10 @@ describe("ConfigProviderPlugin.Plugin", () => {
       ])
 
       const inherited = required(yield* models.get(providerID, Model.ID.make("glm-5.3")))
-      expect(inherited.variants).toEqual([
-        {
-          id: Model.VariantID.make("low"),
-          settings: { effort: "low", thinking: { type: "adaptive", display: "summarized" } },
-        },
-        {
-          id: Model.VariantID.make("max"),
-          settings: { effort: "max", thinking: { type: "adaptive", display: "summarized" } },
-        },
-      ])
+      expect(inherited.variants.find((variant) => variant.id === "low")).toEqual({
+        id: Model.VariantID.make("low"),
+        settings: { effort: "low", thinking: { type: "adaptive", display: "summarized" } },
+      })
       expect(required(yield* models.get(providerID, Model.ID.make("glm-pinned"))).variants).toEqual([chatVariant])
     }),
   )

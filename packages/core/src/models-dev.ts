@@ -1,5 +1,6 @@
 import { Cause, Context, Duration, Effect, Layer, Option, Result, Schedule, Schema, Semaphore } from "effect"
 import { HttpClient, HttpClientError, HttpClientRequest } from "effect/http"
+import { ConfigProvider } from "@opencode/schema/config/provider"
 import { MaxTokensField, MediaInput } from "@opencode/schema/model-compatibility"
 import { ModelsDev } from "@opencode/schema/models-dev"
 import { Money } from "@opencode/schema/money"
@@ -98,7 +99,7 @@ const SourceModel = Schema.Struct({
   modalities: Schema.Struct({ input: Schema.Array(Schema.String), output: Schema.Array(Schema.String) }),
   capabilities: Schema.Struct({
     tools: Schema.Struct({ supported: Schema.Boolean }),
-    reasoning: Model.Reasoning,
+    reasoning: ConfigProvider.Reasoning,
     temperature: Schema.optional(Schema.Boolean),
   }),
   limit: Schema.optional(
@@ -442,7 +443,6 @@ function modelInfo(
       input: modalities(model.modalities.input),
       output: modalities(model.modalities.output),
       temperature: model.capabilities.temperature,
-      reasoning: structuredClone(model.capabilities.reasoning),
     },
     variants: [...(input.variants ?? [])],
     time: { released: released(model.release_date) },
