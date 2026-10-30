@@ -327,12 +327,27 @@ export function createRegion(input: {
     if (state.adding.some((value) => !live(value))) setState("adding", (list) => list.filter(live))
   })
 
+  // Focus leaves before the close starts, back to where it was; otherwise the panel hands it to its toggle.
+  const giveBackFocus = () => {
+    const inside = !!document.getElementById("review-panel")?.contains(document.activeElement)
+    const back = returnFocus
+    returnFocus = undefined
+
+    if (inside && back?.isConnected) back.focus({ preventScroll: true })
+  }
+
+  // Emptying the region closes it, so focus goes back as the user's own close would give it.
+  const emptied = () => {
+    giveBackFocus()
+    input.onEmptied?.()
+  }
+
   // Closing the last New tab of a strip with no tabs closes the region, as closing its last tab does.
   const dismissNewTab = (id: string) =>
     batch(() => {
       setState("adding", (list) => list.filter((value) => value.id !== id))
 
-      if (stored().length === 0 && !state.adding.some(live)) input.onEmptied?.()
+      if (stored().length === 0 && !state.adding.some(live)) emptied()
     })
 
   return {
@@ -396,12 +411,7 @@ export function createRegion(input: {
       const focused = document.activeElement
 
       if (side.opened()) {
-        const inside = !!document.getElementById("review-panel")?.contains(focused)
-        const back = returnFocus
-        returnFocus = undefined
-
-        // Focus leaves before the close starts, back to where it was; otherwise the panel hands it to its toggle.
-        if (inside && back?.isConnected) back.focus({ preventScroll: true })
+        giveBackFocus()
         side.toggle()
 
         return
@@ -431,7 +441,7 @@ export function createRegion(input: {
       batch(() => {
         input.tabs().close(key)
 
-        if (last) input.onEmptied?.()
+        if (last) emptied()
       })
 
       if (entry)
